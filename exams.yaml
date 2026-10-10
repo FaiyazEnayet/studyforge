@@ -1,0 +1,33 @@
+# Example: three exams across three weeks.
+# day 0 is today. rest_days are day offsets with no scheduled sessions.
+daily_budget_minutes: 120
+session_minutes: 25
+rest_days: [6, 13, 20]
+
+exams:
+  - name: "Psychology Midterm"
+    day: 7
+    topics:
+      - { name: "Brain anatomy", difficulty: 2, weight: 0.20 }
+      - { name: "Classical conditioning", difficulty: 2, weight: 0.20 }
+      - { name: "Memory models", difficulty: 3, weight: 0.25 }
+      - { name: "Research methods", difficulty: 2, weight: 0.20 }
+      - { name: "Sleep and dreams", difficulty: 1, weight: 0.15 }
+
+  - name: "Physics I Midterm"
+    day: 14
+    topics:
+      - { name: "Kinematics", difficulty: 2, weight: 0.15 }
+      - { name: "Newton's laws", difficulty: 3, weight: 0.20 }
+      - { name: "Work and energy", difficulty: 3, weight: 0.25 }
+      - { name: "Momentum", difficulty: 3, weight: 0.20 }
+      - { name: "Rotation", difficulty: 4, weight: 0.20 }
+
+  - name: "Calculus III Final"
+    day: 21
+    topics:
+      - { name: "Partial derivatives", difficulty: 3, weight: 0.20 }
+      - { name: "Multiple integrals", difficulty: 4, weight: 0.25 }
+      - { name: "Series convergence", difficulty: 4, weight: 0.25 }
+      - { name: "Vector fields", difficulty: 3, weight: 0.15 }
+      - { name: "Lagrange multipliers", difficulty: 3, weight: 0.15 }

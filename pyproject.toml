@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studyforge"
+version = "0.1.0"
+description = "Exam study scheduling under a forgetting curve"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Faiyaz Enayet" }]
+requires-python = ">=3.10"
+dependencies = ["numpy", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+studyforge = "studyforge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
