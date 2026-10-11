@@ -20,6 +20,25 @@ R is retrievability at the moment of review. Review at full recall and stability
 
 The planner maximizes the sum over topics of (exam weight * predicted recall at exam time). Constraints: a daily minutes cap, rest days with zero sessions, no sessions on or after a topic's exam day, at most two sessions of one topic per day. Algorithm: greedy by marginal gain per minute, then a local search pass that moves or drops sessions until nothing improves. Deterministic. Same inputs give the same plan.
 
+### Your own forgetting rates
+
+The defaults above are a starting guess. When you log a session, add --recall with the fraction you actually remembered when you sat down, like 0.7 for seventy percent. Each logged review with a recall score becomes one data point: the days since your last review of that topic, and what you remembered. Once a topic has three such data points, I fit its stability to your history with least squares on log recall, clamped to sane bounds. That fitted value replaces the default in plan and replan from then on, and every new logged review refits it. When you report a recall score, the stability update uses your number instead of the model's prediction. Topics without enough data keep the defaults, and status tells you which is which.
+
+Real output. Three earlier reviews of Rotation were logged with recall scores, so this one triggers the fit:
+
+```
+$ python -m studyforge log --topic "Rotation" --minutes 25 --day 9 --recall 0.14
+Logged 25 min on Rotation (day 9).
+Retrievability at review: 14%. Stability: 4.35 -> 8.09 days.
+Fitted your personal stability from 3 recall data points: 2.01 days.
+
+$ python -m studyforge status --today 9
+...
+Rotation                         Physics I Midterm         2.01    100%       5      8%   fitted
+...
+Stability: 1/15 topics fitted from your logs. The rest use defaults. Log sessions with --recall to personalize more topics.
+```
+
 ## Quickstart
 
 ```bash
@@ -129,7 +148,7 @@ Sessions displaced:
 
 ## Honest limitations
 
-The curve parameters are population averages, not yours. Ebbinghaus ran his experiments on himself with nonsense syllables in the 1880s. The shape of forgetting is real. The exact numbers for your brain on organic chemistry are not in this repo. Treat the schedule as principled guidance, not a guarantee.
+The curve parameters start as population averages, not yours. Ebbinghaus ran his experiments on himself with nonsense syllables in the 1880s. The shape of forgetting is real. The exact numbers for your brain on organic chemistry are not in this repo, at least not until you log them. Log reviews with --recall and each topic gets its own fitted forgetting rate once you have enough data. Until then the defaults stand in, and status marks which topics are which. Treat the schedule as principled guidance, not a guarantee.
 
 It optimizes recall, not understanding. A topic you can recite is not a topic you can use on a novel problem. For proof based exams, weight understanding work outside the tool.
 

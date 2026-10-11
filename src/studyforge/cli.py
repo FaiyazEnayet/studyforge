@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timedelta
 
 from . import state as st
-from .memory import TopicState, initial_stability
+from .memory import TopicState, fit_stability, initial_stability
 from .planner import PlanTopic, build_plan, to_schedule
 
 
@@ -80,8 +80,11 @@ def cmd_log(args: argparse.Namespace) -> None:
     state = st.load_state(args.state)
     if args.topic not in state["topics"]:
         raise SystemExit(f"unknown topic: {args.topic}")
+    if args.recall is not None and not 0.0 <= args.recall <= 1.0:
+        raise SystemExit("--recall must be between 0 and 1")
     today = args.day if args.day is not None else st.day0_today(state)
     t = state["topics"][args.topic]
+    prev_last = t["last_review"]
     ts = TopicState(
         name=args.topic,
         difficulty=t["difficulty"],
@@ -89,16 +92,30 @@ def cmd_log(args: argparse.Namespace) -> None:
         last_review=t["last_review"],
     )
     old_S = ts.S
-    R = ts.review(today)
+    R = ts.review(today, R=args.recall)
     t["S"] = ts.S
     t["last_review"] = ts.last_review
+    interval = None if prev_last is None else today - prev_last
     state["history"].append(
-        {"day": today, "topic": args.topic, "minutes": args.minutes}
+        {"day": today, "topic": args.topic, "minutes": args.minutes,
+         "interval": interval, "recall": args.recall}
     )
+    # Refit this topic's personal stability from its logged history.
+    pairs = [(h.get("interval"), h.get("recall")) for h in state["history"]
+             if h["topic"] == args.topic]
+    n_pairs = sum(1 for iv, rc in pairs
+                  if iv is not None and rc is not None and iv > 0)
+    S_fit = fit_stability(pairs)
+    if S_fit is not None:
+        t["S"] = S_fit
+        t["S_source"] = "fitted"
     st.save_state(state, args.state)
     print(f"Logged {args.minutes} min on {args.topic} (day {today}).")
     print(f"Retrievability at review: {R:.0%}. "
           f"Stability: {old_S:.2f} -> {ts.S:.2f} days.")
+    if S_fit is not None:
+        print(f"Fitted your personal stability from {n_pairs} recall "
+              f"data points: {S_fit:.2f} days.")
 
 
 def _rebuild(state: dict, today: int, seed: int,
@@ -210,7 +227,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     today = args.today if args.today is not None else st.day0_today(state)
     print(f"Status on day {today} ({_date_of(state, today)}):")
     print(f"{'Topic':32s} {'Exam':22s} {'S(days)':>7s} "
-          f"{'Recall':>7s} {'Exam in':>7s} {'R@exam':>7s}")
+          f"{'Recall':>7s} {'Exam in':>7s} {'R@exam':>7s} {'S from':>8s}")
     for name in sorted(state["topics"]):
         t = state["topics"][name]
         ts = TopicState(name=name, difficulty=t["difficulty"], S=t["S"],
@@ -218,8 +235,17 @@ def cmd_status(args: argparse.Namespace) -> None:
         r_now = ts.recall_on(today)
         r_exam = ts.recall_on(t["exam_day"])
         S = t["S"] if t["S"] is not None else initial_stability(t["difficulty"])
+        src = t.get("S_source", "default")
         print(f"{name:32s} {t['exam'][:22]:22s} {S:7.2f} "
-              f"{r_now:7.0%} {t['exam_day'] - today:7d} {r_exam:7.0%}")
+              f"{r_now:7.0%} {t['exam_day'] - today:7d} {r_exam:7.0%} "
+              f"{src:>8s}")
+    print()
+    n_fit = sum(1 for t in state["topics"].values()
+                if t.get("S_source") == "fitted")
+    n_tot = len(state["topics"])
+    print(f"Stability: {n_fit}/{n_tot} topics fitted from your logs. "
+          f"The rest use defaults. Log sessions with --recall to "
+          f"personalize more topics.")
     print()
     print("Per-exam readiness (weighted recall at exam time, no more study):")
     for exam, info in st.readiness(state, today).items():
@@ -309,6 +335,9 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--minutes", type=int, required=True)
     pl.add_argument("--day", type=int, default=None,
                     help="day offset (default: today)")
+    pl.add_argument("--recall", type=float, default=None,
+                    help="fraction remembered at review, 0 to 1 "
+                         "(personalizes this topic's stability)")
     pl.set_defaults(func=cmd_log)
 
     pr = sub.add_parser("replan", help="rebuild the plan from today")

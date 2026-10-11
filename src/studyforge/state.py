@@ -54,6 +54,7 @@ def new_state(config: dict) -> dict:
                 "difficulty": t["difficulty"],
                 "weight": t["weight"],
                 "S": None,  # filled from difficulty on first use
+                "S_source": "default",  # or "fitted" once logs personalize it
                 "last_review": None,
             }
     return {
