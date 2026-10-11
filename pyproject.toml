@@ -14,6 +14,7 @@ dependencies = ["numpy", "pyyaml"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+dashboard = ["plotly", "matplotlib", "pillow"]
 
 [project.scripts]
 studyforge = "studyforge.cli:main"

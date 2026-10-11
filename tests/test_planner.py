@@ -113,3 +113,23 @@ def test_objective_increases_with_more_study_time():
     _, o_big = build_plan(topics, horizon=21, daily_cap=120, session_min=25,
                           rest_days=set(), seed=0)
     assert o_big >= o_small
+
+
+def test_local_search_caps_respects_extra_day_cap():
+    topics = make_topics()
+    plan, _ = build_plan(topics, 14, 60, 30, set(), start_day=0)
+    # no caps: uniform cap of 60 (two 30-min sessions max per day)
+    plan2 = local_search(topics, plan, 14, 60, 30, set(), start_day=0)
+    used = {}
+    for days in plan2.values():
+        for d in days:
+            used[d] = used.get(d, 0) + 30
+    assert all(v <= 60 for v in used.values())
+    # with an extra 30 min on day 3, day 3 may hold three sessions
+    plan3 = local_search(topics, plan, 14, 60, 30, set(), start_day=0,
+                        caps={3: 90})
+    used3 = {}
+    for days in plan3.values():
+        for d in days:
+            used3[d] = used3.get(d, 0) + 30
+    assert all(used3.get(d, 0) <= (90 if d == 3 else 60) for d in used3)

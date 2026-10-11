@@ -140,11 +140,15 @@ def local_search(
     rest_days: set[int],
     start_day: int = 0,
     max_passes: int = MAX_PASSES,
+    caps: dict[int, int] | None = None,
 ) -> dict[str, list[int]]:
     """Best improvement moves until convergence. Deterministic."""
     plan = {k: sorted(v) for k, v in plan.items()}
     ordered = sorted(topics, key=lambda t: t.name)
     by_name = {tp.name: tp for tp in topics}
+
+    def cap_of(day: int) -> int:
+        return caps.get(day, daily_cap) if caps else daily_cap
 
     def used_minutes(p: dict[str, list[int]]) -> dict[int, int]:
         u: dict[int, int] = {}
@@ -176,7 +180,7 @@ def local_search(
                     if d2 in rest_days:
                         continue
                     room = used.get(d2, 0) + (0 if d2 == d else session_min)
-                    if room > daily_cap:
+                    if room > cap_of(d2):
                         continue
                     if tp2.name == name:
                         cnt = plan[name].count(d2)

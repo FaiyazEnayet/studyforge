@@ -166,8 +166,10 @@ def _rebuild(state: dict, today: int, seed: int,
         return plan
 
     plan = greedy_caps(topics, horizon, cfg["session_minutes"], rest, today)
-    # local search with per-day caps: reuse standard one on non-extra days is
-    # complex; the greedy result alone is a fair what-if comparison baseline.
+    # Same local search as the standard path, but with the per-day caps,
+    # so the what-if comparison stays apples to apples.
+    plan = local_search(topics, plan, horizon, cfg["daily_budget_minutes"],
+                        cfg["session_minutes"], rest, today, caps=caps)
     return plan, objective(topics, plan), horizon
 
 
