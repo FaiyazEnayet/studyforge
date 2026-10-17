@@ -10,7 +10,7 @@ StudyForge allocates limited study time across exams. Its schedule makes assumpt
 
 **Python · constrained planning · recall estimation**
 
-[![StudyForge demo](docs/demo.gif)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
+[![StudyForge demo](docs/demo.gif?v=data-20261017)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
 
 
 ## Explore
