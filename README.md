@@ -33,6 +33,10 @@ A transparent forgetting curve estimates recall at each exam. Greedy allocation 
 | Planning constraints | 120-minute daily cap; 25-minute sessions; three rest days |
 | Readiness | Model estimates, not observed future exam scores |
 
+## Updating this project
+
+Dashboard source language: **Python**. Generator: `tools/make_dashboard.py`. To keep the interactive page, figures, data animation, and README consistent, follow [the coding-agent update guide](AGENT-DASHBOARD-GUIDE.md). The local interactive output is `docs/dashboard.html`.
+
 ## Run locally
 
 
