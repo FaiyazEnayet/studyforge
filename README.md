@@ -1,205 +1,81 @@
-# studyforge
+<p align="center"><img src="docs/readme-banner.svg" alt="StudyForge: Study scheduling under time and exam constraints" width="1200"></p>
 
-![tests](https://img.shields.io/badge/tests-56%2F56%20passing-brightgreen)
-![license](https://img.shields.io/badge/license-MIT-blue)
-![python](https://img.shields.io/badge/python-3.10%2B-blue)
-[![live demo](https://img.shields.io/badge/live%20demo-dashboard-2a9d8f)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
+[![Tests](https://github.com/FaiyazEnayet/studyforge/actions/workflows/ci.yml/badge.svg)](https://github.com/FaiyazEnayet/studyforge/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-007EC6)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB) ![Built with NumPy + planning](https://img.shields.io/badge/built%20with-NumPy%20%2B%20planning-555555) [![Interactive demo](https://img.shields.io/badge/demo-interactive-4C9D39)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
 
-**Exam study scheduling under a forgetting curve.** You list your exams, their topics, and how much each topic matters. studyforge builds a day by day plan that maximizes what you will actually remember on exam day.
+<p align="center"><a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><b>Open interactive demo</b></a> · <a href="docs/dashboard.html">HTML file</a> · <a href="#method">Method</a> · <a href="#run-locally">Run locally</a> · <a href="#limitations">Limitations</a></p>
 
-![Forgetting curve animation](docs/demo.gif)
+# StudyForge
 
-*Above: Rotation, one of the hardest topics in the example set, animated day by day. Each planned review lands, stability grows, and the curve flattens. Generated from the real engine with `python3 tools/make_demo_gif.py`.*
+StudyForge allocates limited study time across exams. Its schedule makes assumptions about forgetting, topic importance and available time explicit, so a student can inspect the plan rather than accept an unexplained priority list.
 
-**Live interactive demo:** open [docs/dashboard.html](https://faiyazenayet.github.io/studyforge/docs/dashboard.html) in a browser. It explores the real planner output for the example exams: the full schedule, per topic forgetting curves, readiness, a what-if comparison, and the personal fitting demo. Everything on the page was computed by the engine, not mocked. Regenerate it any time with `python3 tools/make_dashboard.py`.
+**Python · constrained planning · recall estimation**
 
-I kept making study plans by gut feel. Front load everything, cram the night before, forget half of it by the exam. Spaced repetition research has known the fix for a century. Review a topic right as you are about to forget it. So I built the planner I wanted. It models memory with a forgetting curve, then optimizes the schedule the way you would optimize anything else. Define the objective, respect the constraints, let the algorithm do the rest.
+[![StudyForge demo](docs/demo.gif)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
 
-## Quickstart
 
-```bash
-pip install -e .
+## Explore
+
+- Inspect the actual calendar and the sessions assigned to each day.
+- Compare predicted exam readiness and topic forgetting curves.
+- Evaluate an extra-hour scenario using the same planning engine.
+
+## Method
+
+A transparent forgetting curve estimates recall at each exam. Greedy allocation and local search choose fixed-length sessions under daily limits, rest days, deadlines and spacing constraints. Logged recall can personalize stability estimates.
+
+## Evidence at a glance
+
+| Scope | Recorded result or contract |
+| :--- | :--- |
+| Example plan | Three exams and 15 topics over 21 days |
+| Scheduled work | 72 sessions; 1,800 study minutes |
+| Planning constraints | 120-minute daily cap; 25-minute sessions; three rest days |
+| Readiness | Model estimates, not observed future exam scores |
+
+## Run locally
+
+
+```sh
+python -m pip install -e ".[dashboard,dev]"
+python -m pip install -r portfolio_ui/requirements.txt
+python -m pytest tests -q
 python -m studyforge plan --exams exams.yaml
-python -m studyforge status
-python -m studyforge log --topic "Rotation" --minutes 25
-python -m studyforge replan
-python -m studyforge what-if --day 3 --extra-minutes 60
-python -m studyforge export --format md --out plan.md
+python tools/make_dashboard.py
 ```
 
-State lives in `studyforge_state.json` in the working directory. Override with `--state`.
+## Technical design
 
-## How the pieces fit
+StudyForge models recall with an exponential forgetting curve and increases stability when a review occurs. Fixed-length sessions are allocated using greedy marginal gain followed by local improvement. Daily capacity, rest days, exam deadlines and a spacing guardrail constrain the plan.
 
 ```mermaid
 flowchart LR
-    YAML[exams.yaml] --> PLANCMD[plan]
-    PLANCMD --> PLANNER[planner.py<br/>greedy + local search]
-    PLANNER --> STATE[(studyforge_state.json)]
-    STATE --> LOGCMD[log]
-    LOGCMD --> MEM[memory.py<br/>stability updates + personal fits]
-    MEM --> STATE
-    STATE --> REPLANCMD[replan]
-    REPLANCMD --> PLANNER
-    STATE --> STATUSCMD[status]
-    STATE --> WHATIFCMD[what-if]
-    STATE --> EXPORTCMD[export]
-    PLANNER --> DASH[docs/dashboard.html]
+  N0["Exam weights and deadlines"] --> N1["Planning constraints"]
+  N2["Recall model"] --> N3["Marginal study value"]
+  N1["Planning constraints"] --> N4["Greedy and local search"]
+  N3["Marginal study value"] --> N4["Greedy and local search"]
+  N4["Greedy and local search"] --> N5["Study calendar"]
+  N6["Review logs"] --> N2["Recall model"]
 ```
 
-`memory.py` owns the forgetting curve and the stability update rule. `planner.py` owns the optimizer. `state.py` owns the exams config and the JSON state file. `cli.py` wires the six commands. `dashboard.py` is a thin view layer over all of them. It feeds the HTML dashboard and the GIF script in `tools/`.
+## Evaluation protocol
 
-## The math
+The objective is weighted predicted recall at the exam, not a predicted course grade. Logged recall can personalize stability, but until enough observations exist the parameters are defaults. What-if analysis reruns the same planner with changed time capacity rather than adding a fabricated readiness gain.
 
-Each topic has a stability S measured in days. Recall t days after a review is:
+![Readiness under the example study plan](docs/results.png)
 
-    R(t) = exp(-t / S)
+The example calendar is a real engine output for its supplied weights and constraints. Its quality depends on those inputs. For conceptual or proof-based exams, understanding-oriented tasks need to be represented separately rather than assuming recall alone measures readiness.
 
-Harder topics start with lower stability. A difficulty rating from 1 to 5 maps to S0 = 3.0 / difficulty. An easy topic starts at 3.0 days. A hard one starts at 0.6 days.
+## Code and data
 
-Reviews grow stability. The update rule is fully transparent, SM-2 style, no black box:
-
-    S' = S * (1 + (1 - R))
-
-R is retrievability at the moment of review. Review at full recall and stability does not move. Review after forgetting everything and stability doubles. The first ever review of a topic counts as full learning. Same day repeats gain nothing. That stops the planner from cramming one topic.
-
-The planner maximizes the sum over topics of (exam weight * predicted recall at exam time). Constraints: a daily minutes cap, rest days with zero sessions, no sessions on or after a topic's exam day, at most two sessions of one topic per day. The algorithm is greedy by marginal gain per minute, then a local search pass that moves or drops sessions until nothing improves. Deterministic. Same inputs give the same plan.
+`memory.py` defines forgetting and review updates. `planner.py` handles allocation. `state.py` manages exam configuration and history. `tools/make_dashboard.py` presents actual planner output.
 
 
+## Limitations
 
-## Your own forgetting rates
+- Initial curve parameters are defaults until enough personal recall data is logged.
+- Recall optimization is not a model of conceptual understanding.
+- Topic names currently collide across exams and need stable exam/topic identifiers.
 
-The defaults above are a starting guess. When you log a session, add --recall with the fraction you actually remembered when you sat down. 0.7 means seventy percent. Each logged review with a recall score becomes one data point: the days since your last review of that topic, and what you remembered. Once a topic has three such data points, I fit its stability to your history with least squares on log recall, clamped to sane bounds. That fitted value replaces the default in plan and replan from then on. Every new logged review refits it. When you report a recall score, the stability update uses your number instead of the model's prediction. Topics without enough data keep the defaults. Status tells you which is which.
+## License
 
-Real output. Four reviews of Rotation were logged with recall scores. The fourth one triggers the fit:
-
-```
-$ python -m studyforge log --topic "Rotation" --minutes 25 --day 9 --recall 0.14
-Logged 25 min on Rotation (day 9).
-Retrievability at review: 14%. Stability: 2.57 -> 4.78 days.
-Fitted your personal stability from 3 recall data points: 1.95 days.
-
-$ python -m studyforge status --today 9
-...
-Rotation                         Physics I Midterm         1.95    100%       5      8%   fitted
-...
-Stability: 1/15 topics fitted from your logs. The rest use defaults. Log sessions with --recall to personalize more topics.
-```
-
-
-
-## Demo transcript
-
-Real output from the included `exams.yaml`: three exams, 15 topics, 21 days, 120 minutes per day, three rest days.
-
-```
-$ python -m studyforge plan --exams exams.yaml
-Study plan: 72 sessions, objective 2.278
-Budget: 120 min/day, sessions of 25 min
-Day 0 (2026-10-11):
-  Psychology Midterm / Brain anatomy: 25 min
-  Psychology Midterm / Classical conditioning: 25 min
-  Psychology Midterm / Memory models: 25 min
-  Physics I Midterm / Rotation: 25 min
-Day 1 (2026-10-12):
-  Psychology Midterm / Memory models: 25 min
-  Physics I Midterm / Momentum: 25 min
-  Physics I Midterm / Newton's laws: 25 min
-  Psychology Midterm / Sleep and dreams: 25 min
-Day 2 (2026-10-13):
-  Psychology Midterm / Brain anatomy: 25 min
-  Psychology Midterm / Classical conditioning: 25 min
-  Psychology Midterm / Research methods: 25 min
-  Physics I Midterm / Work and energy: 25 min
-...
-Day 6 (2026-10-17): rest
-...
-Day 20 (2026-10-31): rest
-```
-
-Psychology topics cluster before the day 7 exam. Calculus topics ramp up toward day 21. Rest days stay empty.
-
-Log what you actually study. Each log updates that topic's stability through the review rule:
-
-```
-$ python -m studyforge log --topic "Rotation" --minutes 25 --day 0
-Logged 25 min on Rotation (day 0).
-Retrievability at review: 0%. Stability: 0.75 -> 1.50 days.
-```
-
-`status` shows per topic recall and a per exam readiness score. Readiness is weight normalized predicted recall at exam time with no further study. After logging four sessions on the first two days:
-
-```
-$ python -m studyforge status --today 2
-...
-Per-exam readiness (weighted recall at exam time, no more study):
-  Psychology Midterm: 3% (5 topics, 5 days left)
-  Physics I Midterm: 0% (5 topics, 12 days left)
-  Calculus III Final: 0% (5 topics, 19 days left)
-```
-
-Then replan from today. Logged sessions count as past reviews, so the optimizer redistributes the remaining work:
-
-```
-$ python -m studyforge replan --today 2
-Replanned from day 2: 64 sessions, objective 2.233
-Added sessions:
-  Day 2: Physics I Midterm / Momentum: 25 min
-  Day 3: Psychology Midterm / Memory models: 25 min
-  ...
-Removed sessions:
-  Day 2: Psychology Midterm / Brain anatomy: 25 min
-  Day 3: Calculus III Final / Series convergence: 25 min
-  ...
-```
-
-`what-if` prices extra time. An extra hour on day 3 buys 0.022 on a 2.233 baseline. Small but real, and the tool shows exactly which sessions the extra hour adds and which it displaces:
-
-```
-$ python -m studyforge what-if --day 3 --extra-minutes 60 --today 2
-Baseline objective: 2.233
-With +60 min on day 3: 2.255 (+0.022)
-Sessions added by the extra time:
-  Day 2: Psychology Midterm / Sleep and dreams: 25 min
-  Day 3: Psychology Midterm / Brain anatomy: 25 min
-  Day 3: Psychology Midterm / Classical conditioning: 25 min
-  Day 3: Calculus III Final / Partial derivatives: 25 min
-  ...
-Sessions displaced:
-  Day 2: Psychology Midterm / Classical conditioning: 25 min
-  ...
-```
-
-`export` writes the plan to CSV or Markdown for printing or sharing:
-
-```
-$ python -m studyforge export --format md --out plan.md
-Exported 72 sessions to plan.md
-```
-
-
-
-## Config reference
-
-```yaml
-daily_budget_minutes: 120
-session_minutes: 25
-rest_days: [6, 13, 20]   # day offsets with no sessions
-exams:
-  - name: "Physics I Midterm"
-    day: 14              # days from today
-    topics:
-      - { name: "Rotation", difficulty: 4, weight: 0.20 }
-```
-
-Difficulty runs 1 (easy) to 5 (hard). Weight is the topic's share of the exam.
-
-
-
-## Honest limitations
-
-The curve parameters start as population averages, not yours. Ebbinghaus ran his experiments on himself with nonsense syllables in the 1880s. The shape of forgetting is real. The exact numbers for your brain on organic chemistry are not in this repo, at least not until you log them. Log reviews with --recall and each topic gets its own fitted forgetting rate once you have enough data. Until then the defaults stand in, and status marks which topics are which. Treat the schedule as principled guidance, not a guarantee.
-
-It optimizes recall, not understanding. A topic you can recite is not a topic you can use on a novel problem. For proof based exams, weight understanding work outside the tool.
-
-Garbage topic weights in, garbage plan out. The optimizer trusts your weights completely. If you guess them badly, it will confidently optimize the wrong thing. Spend ten minutes getting weights right before you trust the plan.
+[MIT](LICENSE). Third-party datasets, libraries and fonts retain their own terms.
