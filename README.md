@@ -1,17 +1,18 @@
-<p align="center"><img src="docs/readme-banner.svg" alt="StudyForge: Study scheduling under time and exam constraints" width="1200"></p>
+<p align="center"><img src="docs/readme-banner.svg?v=type-20261017b" alt="StudyForge: Study scheduling under time and exam constraints" width="1200"></p>
 
 [![Tests](https://github.com/FaiyazEnayet/studyforge/actions/workflows/ci.yml/badge.svg)](https://github.com/FaiyazEnayet/studyforge/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-007EC6)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB) ![Built with NumPy + planning](https://img.shields.io/badge/built%20with-NumPy%20%2B%20planning-555555) [![Interactive demo](https://img.shields.io/badge/demo-interactive-4C9D39)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
 
-<p align="center"><a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><b>Open interactive demo</b></a> · <a href="docs/dashboard.html">HTML file</a> · <a href="#method">Method</a> · <a href="#run-locally">Run locally</a> · <a href="#limitations">Limitations</a></p>
+<p align="center"><a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><b>Open interactive demo</b></a> · <a href="#method">Method</a> · <a href="#run-locally">Run locally</a></p>
 
 # StudyForge
 
 StudyForge allocates limited study time across exams. Its schedule makes assumptions about forgetting, topic importance and available time explicit, so a student can inspect the plan rather than accept an unexplained priority list.
 
-**Python · constrained planning · recall estimation**
 
-[![StudyForge demo](docs/demo.gif?v=data-20261017)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
+[![StudyForge demo](docs/demo.gif?v=showcase-20261017b)](https://faiyazenayet.github.io/studyforge/docs/dashboard.html)
 
+
+The calendar makes the cost of competing deadlines concrete. An additional session for one topic consumes time that could support another exam, while spacing and daily limits restrict what can be scheduled. Read the resulting allocation beside predicted exam recall to judge whether the plan reflects the student’s priorities and available study time.
 
 ## Explore
 
