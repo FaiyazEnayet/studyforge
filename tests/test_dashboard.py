@@ -53,17 +53,19 @@ def test_plan_data_respects_constraints():
     for d, minutes in data["day_minutes"].items():
         assert minutes <= cap
         assert d not in rest
-    # no session on or after its exam day
+    # no session on or after its latest exam day
     for name, info in data["topic_info"].items():
-        assert all(d < info["exam_day"] for d in info["days"])
+        latest = max(d for _, _, d in info["bindings"])
+        assert all(d < latest for d in info["days"])
 
 
 def test_recall_trajectory_marks_match_plan_days():
     cfg = load_example_config()
     data = dash.plan_data(cfg)
-    info = data["topic_info"]["Rotation"]
-    traj = dash.recall_trajectory("Rotation", info["days"], info["S0"],
-                                  info["exam_day"], data["horizon"])
+    info = data["topic_info"]["rotation"]
+    exam_day = info["bindings"][0][2]
+    traj = dash.recall_trajectory("rotation", info["days"], info["S0"],
+                                  exam_day, data["horizon"])
     mark_days = [m[0] for m in traj["review_marks"]]
     assert mark_days == [float(d) for d in info["days"]]
     # marks sit at the pre-review recall (the dip), not at 100%
@@ -77,14 +79,15 @@ def test_recall_trajectory_matches_simulate():
 
     cfg = load_example_config()
     data = dash.plan_data(cfg)
-    info = data["topic_info"]["Rotation"]
-    traj = dash.recall_trajectory("Rotation", info["days"], info["S0"],
-                                  info["exam_day"], data["horizon"])
-    tp = PlanTopic("Rotation", info["weight"], info["exam_day"],
+    info = data["topic_info"]["rotation"]
+    exam_day = info["bindings"][0][2]
+    traj = dash.recall_trajectory("rotation", info["days"], info["S0"],
+                                  exam_day, data["horizon"])
+    tp = PlanTopic("rotation", info["bindings"],
                    info["S0"], None)
     S_sim, R_sim = simulate(tp, info["days"])
     assert traj["S_final"] == pytest.approx(S_sim)
-    assert traj["recall_at_exam"] == pytest.approx(R_sim)
+    assert traj["recall_at_exam"] == pytest.approx(R_sim[0])
     assert traj["S_final"] == pytest.approx(8.2926, rel=1e-3)
     assert traj["recall_at_exam"] == pytest.approx(0.6964, rel=1e-3)
 

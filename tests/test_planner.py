@@ -14,32 +14,32 @@ from studyforge.planner import (
 
 def make_topics():
     return [
-        PlanTopic("Alpha", weight=0.5, exam_day=7, S=1.5, last_review=None),
-        PlanTopic("Beta", weight=0.3, exam_day=14, S=1.0, last_review=None),
-        PlanTopic("Gamma", weight=0.2, exam_day=21, S=0.75, last_review=None),
+        PlanTopic("Alpha", [("E", 0.5, 7)], S=1.5, last_review=None),
+        PlanTopic("Beta", [("E", 0.3, 14)], S=1.0, last_review=None),
+        PlanTopic("Gamma", [("E", 0.2, 21)], S=0.75, last_review=None),
     ]
 
 
 def test_simulate_no_sessions_is_baseline():
-    tp = PlanTopic("A", 0.5, 7, 1.5, None)
+    tp = PlanTopic("A", [("E", 0.5, 7)], 1.5, None)
     S, R = simulate(tp, [])
     assert S == pytest.approx(1.5)
-    assert R == 0.0  # never studied: zero recall
+    assert R == [0.0]  # never studied: zero recall
 
 
 def test_simulate_with_prior_review_uses_curve():
     import math
 
-    tp = PlanTopic("A", 0.5, 7, 1.5, last_review=0)
+    tp = PlanTopic("A", [("E", 0.5, 7)], 1.5, last_review=0)
     _, R = simulate(tp, [])
-    assert R == pytest.approx(math.exp(-7 / 1.5))
+    assert R == [pytest.approx(math.exp(-7 / 1.5))]
 
 
 def test_simulate_review_raises_recall_at_exam():
-    tp = PlanTopic("A", 0.5, 7, 1.5, None)
+    tp = PlanTopic("A", [("E", 0.5, 7)], 1.5, None)
     _, r0 = simulate(tp, [])
     _, r1 = simulate(tp, [3])
-    assert r1 > r0
+    assert r1[0] > r0[0]
 
 
 def test_plan_respects_daily_cap():
@@ -67,7 +67,7 @@ def test_no_sessions_on_or_after_exam_day():
     by_name = {t.name: t for t in topics}
     for name, days in plan.items():
         for d in days:
-            assert d < by_name[name].exam_day
+            assert d < by_name[name].latest_exam_day
 
 
 def test_max_two_sessions_per_topic_per_day():

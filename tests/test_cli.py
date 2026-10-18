@@ -31,10 +31,10 @@ def test_plan_creates_state(tmp_path):
 def test_log_updates_stability(tmp_path, capsys):
     sp = str(tmp_path / "state.json")
     run(["--state", sp, "plan", "--exams", EXAMS])
-    before = st.load_state(sp)["topics"]["Rotation"]["S"]
+    before = st.load_state(sp)["topics"]["rotation"]["S"]
     run(["--state", sp, "log", "--topic", "Rotation", "--minutes", "25",
          "--day", "0"])
-    after = st.load_state(sp)["topics"]["Rotation"]
+    after = st.load_state(sp)["topics"]["rotation"]
     assert after["last_review"] == 0
     assert after["S"] is not None
     assert len(st.load_state(sp)["history"]) == 1
