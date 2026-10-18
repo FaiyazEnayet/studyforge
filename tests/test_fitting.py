@@ -86,8 +86,8 @@ def test_log_with_recall_fits_personal_stability(tmp_path, capsys):
         run(["--state", sp, "log", "--topic", "Rotation", "--minutes", "25",
              "--day", str(day), "--recall", f"{r:.4f}"])
     topics = st.load_state(sp)["topics"]
-    assert topics["Rotation"]["S"] == pytest.approx(S_TRUE, rel=1e-3)
-    assert topics["Rotation"]["S_source"] == "fitted"
+    assert topics["rotation"]["S"] == pytest.approx(S_TRUE, rel=1e-3)
+    assert topics["rotation"]["S_source"] == "fitted"
     out = capsys.readouterr().out
     assert "Fitted your personal stability" in out
 
@@ -113,7 +113,7 @@ def test_log_without_recall_keeps_default_source(tmp_path):
         run(["--state", sp, "log", "--topic", "Rotation", "--minutes", "25",
              "--day", str(day)])
     topics = st.load_state(sp)["topics"]
-    assert topics["Rotation"]["S_source"] == "default"
+    assert topics["rotation"]["S_source"] == "default"
 
 
 def test_log_rejects_bad_recall(tmp_path):
@@ -135,7 +135,7 @@ def test_too_few_recall_points_falls_back(tmp_path):
     run(["--state", sp, "log", "--topic", "Rotation", "--minutes", "25",
          "--day", "2", "--recall", "0.37"])
     topics = st.load_state(sp)["topics"]
-    assert topics["Rotation"]["S_source"] == "default"
+    assert topics["rotation"]["S_source"] == "default"
 
 
 def test_status_marks_fitted_topics(tmp_path, capsys):
@@ -160,7 +160,7 @@ def test_planner_uses_fitted_stability(tmp_path):
     run(["--state", sp, "plan", "--exams", EXAMS])
     state = st.load_state(sp)
     before = {t.name: t.S for t in cli._plan_topics(state)}
-    assert before["Rotation"] == pytest.approx(initial_stability(4))
+    assert before["rotation"] == pytest.approx(initial_stability(4))
     run(["--state", sp, "log", "--topic", "Rotation", "--minutes", "25",
          "--day", "0", "--recall", "0.0"])
     for day, prev in [(2, 0), (5, 2), (9, 5)]:
@@ -169,4 +169,4 @@ def test_planner_uses_fitted_stability(tmp_path):
              "--day", str(day), "--recall", f"{r:.4f}"])
     state = st.load_state(sp)
     after = {t.name: t.S for t in cli._plan_topics(state)}
-    assert after["Rotation"] == pytest.approx(S_TRUE, rel=1e-3)
+    assert after["rotation"] == pytest.approx(S_TRUE, rel=1e-3)

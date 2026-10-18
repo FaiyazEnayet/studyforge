@@ -15,20 +15,21 @@ from .planner import PlanTopic, build_plan, simulate, to_schedule
 
 
 def fresh_topics(config: dict) -> list[PlanTopic]:
-    """PlanTopics for a brand-new plan (day zero, no reviews logged yet)."""
-    pts = []
+    """PlanTopics for a brand-new plan (day zero, no reviews logged yet).
+
+    Topics shared by several exams get one PlanTopic with all bindings.
+    """
+    from .state import topic_id
+    by_id: dict[str, dict] = {}
     for ex in config["exams"]:
         for t in ex["topics"]:
-            pts.append(
-                PlanTopic(
-                    t["name"],
-                    t["weight"],
-                    ex["day"],
-                    initial_stability(t["difficulty"]),
-                    None,
-                )
-            )
-    return pts
+            tid = topic_id(t["name"])
+            e = by_id.setdefault(tid, {"difficulty": t["difficulty"], "bindings": []})
+            e["bindings"].append((ex["name"], t["weight"], ex["day"]))
+    return [
+        PlanTopic(tid, e["bindings"], initial_stability(e["difficulty"]), None)
+        for tid, e in by_id.items()
+    ]
 
 
 def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
@@ -41,7 +42,7 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
     per-day minutes used, and session counts.
     """
     topics = fresh_topics(config)
-    horizon = max(t.exam_day for t in topics)
+    horizon = max(t.latest_exam_day for t in topics)
     rest = set(config["rest_days"])
     daily = config["daily_budget_minutes"]
     sess = config["session_minutes"]
@@ -49,40 +50,46 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
                            start_day=today, seed=seed)
     sched = to_schedule(plan, sess)
     by_name = {t.name: t for t in topics}
-    exam_of = {t["name"]: ex["name"] for ex in config["exams"]
-               for t in ex["topics"]}
+    from .state import topic_id as _tid
+    exam_of: dict[str, list[str]] = {}
+    for ex in config["exams"]:
+        for t in ex["topics"]:
+            exam_of.setdefault(_tid(t["name"]), []).append(ex["name"])
 
     topic_info = {}
     for name, days in plan.items():
         tp = by_name[name]
-        S_final, R_exam = simulate(tp, days)
+        S_final, recalls = simulate(tp, days)
         topic_info[name] = {
-            "exam": exam_of[name],
+            "exams": exam_of[name],
             "sessions": len(days),
             "minutes": len(days) * sess,
             "days": sorted(days),
             "S_final": S_final,
-            "recall_at_exam": R_exam,
+            # recall per binding, in binding order
+            "recalls": recalls,
+            "bindings": tp.bindings,
             "S0": tp.S,
-            "exam_day": tp.exam_day,
-            "weight": tp.weight,
         }
 
     exam_summary: dict[str, dict] = {}
     for ex in config["exams"]:
         num = den = 0.0
         minutes = sessions = 0
+        n_topics = 0
         for name, info in topic_info.items():
-            if info["exam"] != ex["name"]:
-                continue
-            num += info["weight"] * info["recall_at_exam"]
-            den += info["weight"]
-            minutes += info["minutes"]
-            sessions += info["sessions"]
+            for (b_ex, w, _), R in zip(info["bindings"], info["recalls"]):
+                if b_ex != ex["name"]:
+                    continue
+                num += w * R
+                den += w
+                n_topics += 1
+            if ex["name"] in info["exams"]:
+                minutes += info["minutes"]
+                sessions += info["sessions"]
         exam_summary[ex["name"]] = {
             "day": ex["day"],
-            "topics": sum(1 for n, i in topic_info.items()
-                          if i["exam"] == ex["name"]),
+            "topics": n_topics,
             "sessions": sessions,
             "minutes": minutes,
             "recall_at_exam": num / den if den else 0.0,
@@ -142,19 +149,8 @@ def recall_trajectory(name: str, plan_days: list[int], S0: float,
 
 def _state_from_config(config: dict) -> dict:
     """Minimal CLI state dict for a fresh plan, for the what-if rebuild."""
-    topics = {}
-    for ex in config["exams"]:
-        for t in ex["topics"]:
-            topics[t["name"]] = {
-                "exam": ex["name"],
-                "exam_day": ex["day"],
-                "difficulty": t["difficulty"],
-                "weight": t["weight"],
-                "S": None,
-                "S_source": "default",
-                "last_review": None,
-            }
-    return {"config": config, "topics": topics, "history": [], "plan": {}}
+    from .state import new_state
+    return new_state(config)
 
 
 def what_if_data(config: dict, today: int, day: int,
@@ -166,7 +162,7 @@ def what_if_data(config: dict, today: int, day: int,
     """
     state = _state_from_config(config)
     topics = _cli._plan_topics(state)
-    horizon = max(t.exam_day for t in topics)
+    horizon = max(t.latest_exam_day for t in topics)
     rest = set(config["rest_days"])
     base_plan, base_obj = build_plan(
         topics, horizon, config["daily_budget_minutes"],
@@ -177,16 +173,20 @@ def what_if_data(config: dict, today: int, day: int,
     base_sched = to_schedule(base_plan, config["session_minutes"])
     new_sched = to_schedule(new_plan, config["session_minutes"])
     added, removed = _cli._diff_plans(base_sched, new_sched, today)
-    exam_of = {t["name"]: ex["name"] for ex in config["exams"]
-               for t in ex["topics"]}
+    from .state import topic_id
+    exam_of = {}
+    for ex in config["exams"]:
+        for t in ex["topics"]:
+            exam_of.setdefault(topic_id(t["name"]), []).append(ex["name"])
+    exam_str = {tid: ",".join(names) for tid, names in exam_of.items()}
     return {
         "day": day,
         "extra_minutes": extra_minutes,
         "baseline_obj": base_obj,
         "new_obj": new_obj,
         "delta": new_obj - base_obj,
-        "added": [(d, exam_of[n], n, m) for d, n, m in added],
-        "removed": [(d, exam_of[n], n, m) for d, n, m in removed],
+        "added": [(d, exam_str[n], n, m) for d, n, m in added],
+        "removed": [(d, exam_str[n], n, m) for d, n, m in removed],
     }
 
 

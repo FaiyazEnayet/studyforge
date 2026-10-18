@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime
 
 import yaml
 
 DEFAULT_STATE = "studyforge_state.json"
+
+
+def topic_id(name: str) -> str:
+    """Stable ID for a knowledge topic, derived from its display name.
+
+    The same name always maps to the same ID, so a topic shared by two
+    exams is one knowledge state with two exam bindings. Names that
+    slug to nothing are rejected.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug:
+        raise ValueError(f"topic name {name!r} has no usable ID")
+    return slug
 
 
 def load_config(path: str) -> dict:
@@ -44,22 +58,42 @@ def day0_today(state: dict) -> int:
 
 
 def new_state(config: dict) -> dict:
-    """Fresh state from a config. Day zero is today."""
+    """Fresh state from a config. Day zero is today.
+
+    Knowledge topics get stable IDs (one memory state per topic),
+    separately from exam-topic bindings (topic ID + weight per exam;
+    the deadline comes from the exam). Two exams can share one topic
+    without overwriting each other's objectives. A duplicate name
+    within a single exam is rejected.
+    """
     topics: dict[str, dict] = {}
+    exams = []
     for ex in config["exams"]:
+        bindings = []
+        seen: set[str] = set()
         for t in ex["topics"]:
-            topics[t["name"]] = {
-                "exam": ex["name"],
-                "exam_day": ex["day"],
-                "difficulty": t["difficulty"],
-                "weight": t["weight"],
-                "S": None,  # filled from difficulty on first use
-                "S_source": "default",  # or "fitted" once logs personalize it
-                "last_review": None,
-            }
+            tid = topic_id(t["name"])
+            if tid in seen:
+                raise ValueError(
+                    f"duplicate topic {t['name']!r} in exam {ex['name']!r}: "
+                    "list it once or rename one entry"
+                )
+            seen.add(tid)
+            if tid not in topics:
+                topics[tid] = {
+                    "name": t["name"],
+                    "difficulty": t["difficulty"],
+                    "S": None,  # filled from difficulty on first use
+                    "S_source": "default",  # or "fitted" once logs personalize it
+                    "last_review": None,
+                }
+            bindings.append({"id": tid, "weight": t["weight"]})
+        exams.append({"name": ex["name"], "day": ex["day"], "topics": bindings})
+    new_config = dict(config)
+    new_config["exams"] = exams
     return {
         "day0": date.today().isoformat(),
-        "config": config,
+        "config": new_config,
         "topics": topics,
         "history": [],
         "plan": {},
@@ -83,6 +117,8 @@ def readiness(state: dict, today: int) -> dict[str, dict]:
 
     For each exam, readiness = sum(weight * predicted recall at exam day)
     / sum(weights), using current memory state and no further study.
+    A topic bound to several exams contributes to each with that
+    binding's weight and deadline, over the one shared memory state.
     Returns {exam_name: {"readiness": 0..1, "days_left": int, "topics": n}}.
     """
     from .memory import TopicState
@@ -90,20 +126,19 @@ def readiness(state: dict, today: int) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for ex in state["config"]["exams"]:
         num, den = 0.0, 0.0
-        for tname, t in state["topics"].items():
-            if t["exam"] != ex["name"]:
-                continue
+        for b in ex["topics"]:
+            t = state["topics"][b["id"]]
             ts = TopicState(
-                name=tname,
+                name=t["name"],
                 difficulty=t["difficulty"],
                 S=t["S"],
                 last_review=t["last_review"],
             )
-            num += t["weight"] * ts.recall_on(ex["day"])
-            den += t["weight"]
+            num += b["weight"] * ts.recall_on(ex["day"])
+            den += b["weight"]
         out[ex["name"]] = {
             "readiness": (num / den) if den else 0.0,
             "days_left": ex["day"] - today,
-            "topics": sum(1 for t in state["topics"].values() if t["exam"] == ex["name"]),
+            "topics": len(ex["topics"]),
         }
     return out

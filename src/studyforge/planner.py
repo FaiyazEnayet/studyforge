@@ -37,30 +37,43 @@ MAX_PASSES = 100
 
 
 class PlanTopic:
+    """One knowledge topic with its exam bindings.
+
+    A topic shared by several exams keeps one memory state (S,
+    last_review) but contributes weight * recall at EACH bound exam's
+    deadline to the objective. `bindings` is a list of
+    (exam_name, weight, exam_day) tuples.
+    """
+
     def __init__(
         self,
         name: str,
-        weight: float,
-        exam_day: int,
+        bindings: list[tuple[str, float, int]],
         S: float,
         last_review: int | None,
     ) -> None:
         self.name = name
-        self.weight = float(weight)
-        self.exam_day = int(exam_day)
+        self.bindings = [(str(e), float(w), int(d)) for e, w, d in bindings]
         self.S = float(S)
         self.last_review = last_review
 
+    @property
+    def latest_exam_day(self) -> int:
+        return max(d for _, _, d in self.bindings)
 
-def simulate(topic: PlanTopic, session_days: list[int]) -> tuple[float, float]:
-    """Simulate reviews on the given days. Returns (final S, recall at exam).
 
-    A topic never reviewed starts with recall zero. Its first review is
-    treated as full learning (R = 0 at review, so stability doubles),
-    regardless of which day it falls on.
+def simulate(topic: PlanTopic, session_days: list[int]) -> tuple[float, list[float]]:
+    """Simulate reviews on the given days.
+
+    Returns (final S, recalls): recalls[i] is the predicted recall at
+    bindings[i]'s exam day, using only sessions before that day. A topic
+    never reviewed starts with recall zero. Its first review is treated
+    as full learning (R = 0 at review, so stability doubles), regardless
+    of which day it falls on.
     """
-    S = topic.S
-    lr = topic.last_review
+    S, lr = topic.S, topic.last_review
+    # chronological simulation, snapshotting (S, lr) after each session
+    snaps: list[tuple[int, float, int | None]] = []
     for d in sorted(session_days):
         if lr is not None and (d <= lr or S <= 0):
             continue
@@ -70,18 +83,27 @@ def simulate(topic: PlanTopic, session_days: list[int]) -> tuple[float, float]:
             R = math.exp(-(d - lr) / S)
         S = S * (1.0 + GROWTH * (1.0 - R))
         lr = d
-    if lr is None:
-        return S, 0.0
-    R_exam = math.exp(-(topic.exam_day - lr) / S) if S > 0 else 0.0
-    return S, R_exam
+        snaps.append((d, S, lr))
+    recalls = []
+    for _, _, exam_day in topic.bindings:
+        S_e, lr_e = topic.S, topic.last_review
+        for d, S_s, lr_s in snaps:
+            if d >= exam_day:
+                break
+            S_e, lr_e = S_s, lr_s
+        if lr_e is None or S_e <= 0:
+            recalls.append(0.0)
+        else:
+            recalls.append(math.exp(-(exam_day - lr_e) / S_e))
+    return S, recalls
 
 
 def objective(topics: list[PlanTopic], plan: dict[str, list[int]]) -> float:
-    """Sum of weight * predicted recall at exam time."""
+    """Sum over topics and their exam bindings of weight * recall."""
     total = 0.0
     for tp in topics:
-        _, R = simulate(tp, plan.get(tp.name, []))
-        total += tp.weight * R
+        _, Rs = simulate(tp, plan.get(tp.name, []))
+        total += sum(w * R for (_, w, _), R in zip(tp.bindings, Rs))
     return total
 
 
@@ -111,7 +133,7 @@ def greedy(
         base = objective(topics, plan)
         best: tuple[float, str, int] | None = None
         for tp in ordered:
-            last_day = min(horizon, tp.exam_day)
+            last_day = min(horizon, tp.latest_exam_day)
             for d in range(start_day, last_day):
                 if not _day_has_room(used, d, session_min, daily_cap, rest_days):
                     continue
@@ -173,7 +195,7 @@ def local_search(
                 best = (gain, ("drop", name, d))
             # candidate 2: move it to another (topic, day)
             for tp2 in ordered:
-                last_day = min(horizon, tp2.exam_day)
+                last_day = min(horizon, tp2.latest_exam_day)
                 for d2 in range(start_day, last_day):
                     if (tp2.name, d2) == (name, d):
                         continue

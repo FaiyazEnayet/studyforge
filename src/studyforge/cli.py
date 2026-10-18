@@ -13,11 +13,35 @@ from .planner import PlanTopic, build_plan, to_schedule
 
 
 def _plan_topics(state: dict) -> list[PlanTopic]:
+    """One PlanTopic per knowledge topic, with all its exam bindings.
+
+    A topic shared by two exams keeps one memory state but contributes
+    to the objective at each bound exam's deadline.
+    """
+    by_id = {ex["name"]: ex for ex in state["config"]["exams"]}
     pts = []
-    for name, t in state["topics"].items():
+    for tid, t in state["topics"].items():
+        bindings = []
+        for ex in state["config"]["exams"]:
+            for b in ex["topics"]:
+                if b["id"] == tid:
+                    bindings.append((ex["name"], b["weight"], ex["day"]))
         S = t["S"] if t["S"] is not None else initial_stability(t["difficulty"])
-        pts.append(PlanTopic(name, t["weight"], t["exam_day"], S, t["last_review"]))
+        pts.append(PlanTopic(tid, bindings, S, t["last_review"]))
     return pts
+
+
+def _resolve_topic(state: dict, ref: str) -> str:
+    """Resolve a CLI topic reference (ID or display name) to a topic ID."""
+    if ref in state["topics"]:
+        return ref
+    matches = [tid for tid, t in state["topics"].items()
+               if t["name"].lower() == ref.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise SystemExit(f"unknown topic: {ref}")
+    raise SystemExit(f"ambiguous topic {ref!r}: matches {matches}")
 
 
 def _date_of(state: dict, day: int) -> str:
@@ -25,8 +49,10 @@ def _date_of(state: dict, day: int) -> str:
     return (d0 + timedelta(days=day)).isoformat()
 
 
-def _exam_of(state: dict, topic: str) -> str:
-    return state["topics"][topic]["exam"]
+def _exams_of(state: dict, topic_id: str) -> list[str]:
+    """Names of exams a topic is bound to (a shared topic lists several)."""
+    return [ex["name"] for ex in state["config"]["exams"]
+            if any(b["id"] == topic_id for b in ex["topics"])]
 
 
 def _store_plan(state: dict, sched: dict[int, list[tuple[str, int]]]) -> None:
@@ -47,7 +73,7 @@ def _print_schedule(state: dict, sched: dict[int, list[tuple[str, int]]],
         else:
             print(f"Day {d} ({_date_of(state, d)}):")
             for name, minutes in sessions:
-                print(f"  {_exam_of(state, name)} / {name}: {minutes} min")
+                print(f"  {",".join(_exams_of(state, name))} / {name}: {minutes} min")
 
 
 def _objective_of(state: dict, plan_days: dict[str, list[int]]) -> float:
@@ -60,7 +86,7 @@ def cmd_plan(args: argparse.Namespace) -> None:
     cfg = st.load_config(args.exams)
     state = st.new_state(cfg)
     topics = _plan_topics(state)
-    horizon = max(t.exam_day for t in topics)
+    horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     plan, obj = build_plan(
         topics, horizon, cfg["daily_budget_minutes"],
@@ -78,15 +104,14 @@ def cmd_plan(args: argparse.Namespace) -> None:
 
 def cmd_log(args: argparse.Namespace) -> None:
     state = st.load_state(args.state)
-    if args.topic not in state["topics"]:
-        raise SystemExit(f"unknown topic: {args.topic}")
+    tid = _resolve_topic(state, args.topic)
     if args.recall is not None and not 0.0 <= args.recall <= 1.0:
         raise SystemExit("--recall must be between 0 and 1")
     today = args.day if args.day is not None else st.day0_today(state)
-    t = state["topics"][args.topic]
+    t = state["topics"][tid]
     prev_last = t["last_review"]
     ts = TopicState(
-        name=args.topic,
+        name=tid,
         difficulty=t["difficulty"],
         S=t["S"],
         last_review=t["last_review"],
@@ -97,12 +122,12 @@ def cmd_log(args: argparse.Namespace) -> None:
     t["last_review"] = ts.last_review
     interval = None if prev_last is None else today - prev_last
     state["history"].append(
-        {"day": today, "topic": args.topic, "minutes": args.minutes,
+        {"day": today, "topic": tid, "minutes": args.minutes,
          "interval": interval, "recall": args.recall}
     )
     # Refit this topic's personal stability from its logged history.
     pairs = [(h.get("interval"), h.get("recall")) for h in state["history"]
-             if h["topic"] == args.topic]
+             if h["topic"] == tid]
     n_pairs = sum(1 for iv, rc in pairs
                   if iv is not None and rc is not None and iv > 0)
     S_fit = fit_stability(pairs)
@@ -110,7 +135,7 @@ def cmd_log(args: argparse.Namespace) -> None:
         t["S"] = S_fit
         t["S_source"] = "fitted"
     st.save_state(state, args.state)
-    print(f"Logged {args.minutes} min on {args.topic} (day {today}).")
+    print(f"Logged {args.minutes} min on {t['name']} (day {today}).")
     print(f"Retrievability at review: {R:.0%}. "
           f"Stability: {old_S:.2f} -> {ts.S:.2f} days.")
     if S_fit is not None:
@@ -123,7 +148,7 @@ def _rebuild(state: dict, today: int, seed: int,
     """Rebuild the plan from today. extra maps day -> added minutes of cap."""
     cfg = state["config"]
     topics = _plan_topics(state)
-    horizon = max(t.exam_day for t in topics)
+    horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     if not extra:
         plan, obj = build_plan(
@@ -146,7 +171,7 @@ def _rebuild(state: dict, today: int, seed: int,
             base = objective(topics, plan)
             best = None
             for tp in ordered:
-                for d in range(start_day, min(horizon, tp.exam_day)):
+                for d in range(start_day, min(horizon, tp.latest_exam_day)):
                     cap = caps.get(d, cfg["daily_budget_minutes"])
                     if not _day_has_room(used, d, session_min, cap, rest_days):
                         continue
@@ -215,11 +240,11 @@ def cmd_replan(args: argparse.Namespace) -> None:
     if added:
         print("Added sessions:")
         for d, name, minutes in added:
-            print(f"  Day {d}: {_exam_of(state, name)} / {name}: {minutes} min")
+            print(f"  Day {d}: {",".join(_exams_of(state, name))} / {name}: {minutes} min")
     if removed:
         print("Removed sessions:")
         for d, name, minutes in removed:
-            print(f"  Day {d}: {_exam_of(state, name)} / {name}: {minutes} min")
+            print(f"  Day {d}: {",".join(_exams_of(state, name))} / {name}: {minutes} min")
     if not added and not removed:
         print("No changes to the remaining plan.")
 
@@ -228,18 +253,26 @@ def cmd_status(args: argparse.Namespace) -> None:
     state = st.load_state(args.state)
     today = args.today if args.today is not None else st.day0_today(state)
     print(f"Status on day {today} ({_date_of(state, today)}):")
-    print(f"{'Topic':32s} {'Exam':22s} {'S(days)':>7s} "
+    print(f"{'Topic':32s} {'Exams':22s} {'S(days)':>7s} "
           f"{'Recall':>7s} {'Exam in':>7s} {'R@exam':>7s} {'S from':>8s}")
-    for name in sorted(state["topics"]):
-        t = state["topics"][name]
-        ts = TopicState(name=name, difficulty=t["difficulty"], S=t["S"],
+    # earliest bound deadline per topic for the at-a-glance columns
+    deadline = {}
+    for ex in state["config"]["exams"]:
+        for b in ex["topics"]:
+            if b["id"] not in deadline or ex["day"] < deadline[b["id"]]:
+                deadline[b["id"]] = ex["day"]
+    for tid in sorted(state["topics"], key=lambda i: state["topics"][i]["name"]):
+        t = state["topics"][tid]
+        ts = TopicState(name=tid, difficulty=t["difficulty"], S=t["S"],
                         last_review=t["last_review"])
         r_now = ts.recall_on(today)
-        r_exam = ts.recall_on(t["exam_day"])
+        d_day = deadline.get(tid, today)
+        r_exam = ts.recall_on(d_day)
         S = t["S"] if t["S"] is not None else initial_stability(t["difficulty"])
         src = t.get("S_source", "default")
-        print(f"{name:32s} {t['exam'][:22]:22s} {S:7.2f} "
-              f"{r_now:7.0%} {t['exam_day'] - today:7d} {r_exam:7.0%} "
+        exams = ",".join(_exams_of(state, tid))[:22]
+        print(f"{t['name']:32s} {exams:22s} {S:7.2f} "
+              f"{r_now:7.0%} {d_day - today:7d} {r_exam:7.0%} "
               f"{src:>8s}")
     print()
     n_fit = sum(1 for t in state["topics"].values()
@@ -260,7 +293,7 @@ def cmd_what_if(args: argparse.Namespace) -> None:
     today = args.today if args.today is not None else st.day0_today(state)
     cfg = state["config"]
     topics = _plan_topics(state)
-    horizon = max(t.exam_day for t in topics)
+    horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     base_plan, base_obj = build_plan(
         topics, horizon, cfg["daily_budget_minutes"],
@@ -277,11 +310,11 @@ def cmd_what_if(args: argparse.Namespace) -> None:
     if added:
         print("Sessions added by the extra time:")
         for d, name, minutes in added:
-            print(f"  Day {d}: {_exam_of(state, name)} / {name}: {minutes} min")
+            print(f"  Day {d}: {",".join(_exams_of(state, name))} / {name}: {minutes} min")
     if removed:
         print("Sessions displaced:")
         for d, name, minutes in removed:
-            print(f"  Day {d}: {_exam_of(state, name)} / {name}: {minutes} min")
+            print(f"  Day {d}: {",".join(_exams_of(state, name))} / {name}: {minutes} min")
     if not added and not removed:
         print("No change: the extra time buys nothing at the margin.")
 
@@ -299,7 +332,7 @@ def cmd_export(args: argparse.Namespace) -> None:
             rows.append({
                 "day": d,
                 "date": _date_of(state, d),
-                "exam": _exam_of(state, name),
+                "exam": ",".join(_exams_of(state, name)),
                 "topic": name,
                 "minutes": minutes,
             })
@@ -314,7 +347,8 @@ def cmd_export(args: argparse.Namespace) -> None:
             for d in sorted(sched):
                 f.write(f"## Day {d} ({_date_of(state, d)})\n\n")
                 for name, minutes in sched[d]:
-                    f.write(f"- {_exam_of(state, name)} / {name}: {minutes} min\n")
+                    exams = ",".join(_exams_of(state, name))
+                    f.write(f"- {exams} / {name}: {minutes} min\n")
                 f.write("\n")
     print(f"Exported {len(rows)} sessions to {args.out}")
 
