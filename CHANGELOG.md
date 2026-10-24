@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Docs
+- Centered the README header: uniform dark badge labels and three action buttons in the dashboard palette (Open Dashboard, Explore Method, Run Locally) with a black label side so they stand out on the page.
+
 ## v1.1.0
 
 ### Fixed
