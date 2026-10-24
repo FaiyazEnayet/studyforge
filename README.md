@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><img src="https://img.shields.io/badge/Open-Dashboard-4f6549?style=for-the-badge&labelColor=000000" alt="Open Dashboard"></a>
-  <a href="#method"><img src="https://img.shields.io/badge/Explore-Method-363d30?style=for-the-badge&labelColor=000000" alt="Explore Method"></a>
-  <a href="#run-locally"><img src="https://img.shields.io/badge/Run-Locally-626954?style=for-the-badge&labelColor=000000" alt="Run Locally"></a>
+  <a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><img src="https://img.shields.io/badge/Open-Dashboard-4f6549?style=for-the-badge&labelColor=f4edda" alt="Open Dashboard"></a>
+  <a href="#method"><img src="https://img.shields.io/badge/Explore-Method-363d30?style=for-the-badge&labelColor=f4edda" alt="Explore Method"></a>
+  <a href="#run-locally"><img src="https://img.shields.io/badge/Run-Locally-626954?style=for-the-badge&labelColor=f4edda" alt="Run Locally"></a>
 </p>
 
 StudyForge allocates limited study time across exams. Its schedule makes assumptions about forgetting, topic importance and available time explicit, so a student can inspect the plan rather than accept an unexplained priority list.
