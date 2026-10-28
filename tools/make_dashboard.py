@@ -96,7 +96,8 @@ def fig_forgetting_curves(data: dict) -> go.Figure:
     buttons = []
     for i, (name, info) in enumerate(sorted(data["topic_info"].items())):
         traj = dash.recall_trajectory(
-            name, info["days"], info["S0"], info["exam_day"], horizon)
+            name, info["days"], info["S0"], dash.topic_exam_day(info),
+            horizon)
         fig.add_trace(go.Scatter(
             x=traj["xs"], y=[r * 100 for r in traj["ys"]],
             mode="lines", name=name, visible=(i == 0),
@@ -182,11 +183,11 @@ def fig_fit() -> go.Figure:
     px, pr = zip(*fd["pairs"])
     fig.add_trace(go.Scatter(
         x=list(px), y=[r * 100 for r in pr],
-        mode="markers", name="your logged reviews",
+        mode="markers", name="illustrative example points (not logged reviews)",
         marker=dict(color="#e76f51", size=11),
     ))
     fig.update_layout(
-        title="Personal stability fit: your recall vs the fitted curve",
+        title="Illustrative stability fit: example points vs the fitted curve",
         xaxis_title="days since previous review",
         yaxis_title="recall (%)",
         yaxis_range=[0, 105],

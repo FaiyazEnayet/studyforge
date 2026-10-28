@@ -83,6 +83,8 @@ The example calendar is a real engine output for its supplied weights and constr
 
 `memory.py` defines forgetting and review updates. `planner.py` handles allocation. `state.py` manages exam configuration and history. `tools/make_dashboard.py` presents actual planner output.
 
+Dashboard topic data uses one entry per normalized topic ID, with `exam_days` listing every binding deadline and `exam_day` as the latest binding deadline. The fitting demo chart uses illustrative example points, not logged reviews, and its data carries that provenance.
+
 
 ## Limitations
 

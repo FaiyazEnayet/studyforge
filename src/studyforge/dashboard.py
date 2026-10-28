@@ -3,6 +3,15 @@
 Everything here is a thin layer over the real engine (memory, planner,
 state, cli): no reimplemented math, no invented numbers. The dashboard
 generator script and the tests both import from this module.
+
+Topic schema (one entry per normalized topic ID in plan_data topic_info):
+each entry carries its bindings as (exam name, weight, exam day)
+tuples, exam_days listing every binding deadline, and exam_day as the
+latest binding deadline, which is the single deadline the curve views
+use. A topic bound to several exams keeps one memory state and one
+entry; consumers must not invent a deadline that is not in bindings.
+topic_exam_day validates that contract and fails loudly on a mismatch
+instead of plotting against a wrong or missing deadline.
 """
 
 from __future__ import annotations
@@ -32,12 +41,40 @@ def fresh_topics(config: dict) -> list[PlanTopic]:
     ]
 
 
+def topic_exam_day(info: dict) -> int:
+    """Validated latest binding deadline for one topic_info entry.
+
+    Returns info["exam_day"] only when it matches the latest day in
+    info["bindings"] (and info["exam_days"] when present). Raises
+    ValueError on a missing or inconsistent exam_day so a generator
+    fails loudly instead of plotting against a wrong deadline.
+    """
+    if "exam_day" not in info:
+        raise ValueError("topic_info entry lacks exam_day")
+    exam_day = info["exam_day"]
+    bindings = info.get("bindings", [])
+    if bindings:
+        latest = max(d for _, _, d in bindings)
+        if exam_day != latest:
+            raise ValueError(
+                f"topic_info exam_day {exam_day!r} does not match "
+                f"latest binding day {latest!r}")
+    if "exam_days" in info:
+        expected = sorted({d for _, _, d in bindings})
+        if list(info["exam_days"]) != expected:
+            raise ValueError(
+                f"topic_info exam_days {info['exam_days']!r} does not "
+                f"match binding days {expected!r}")
+    return exam_day
+
+
 def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
     """Run the real planner and return everything the dashboard needs.
 
     Returns a dict with: plan (topic -> sorted days), objective,
     schedule (day -> [(topic, minutes)]), horizon, per-topic info
-    (sessions, final stability, recall at exam), per-exam summary
+    (sessions, final stability, recall at exam, bindings, exam_days,
+    and exam_day as the latest binding deadline), per-exam summary
     (sessions, minutes, weighted recall at exam after the plan),
     per-day minutes used, and session counts.
     """
@@ -69,6 +106,9 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
             # recall per binding, in binding order
             "recalls": recalls,
             "bindings": tp.bindings,
+            # every binding deadline, plus the latest one as exam_day
+            "exam_days": sorted({d for _, _, d in tp.bindings}),
+            "exam_day": tp.latest_exam_day,
             "S0": tp.S,
         }
 
@@ -191,10 +231,12 @@ def what_if_data(config: dict, today: int, day: int,
 
 
 def fit_demo_data() -> dict:
-    """The honest fitting demo: three logged recall points for Rotation.
+    """The fitting demo: three illustrative (interval, recall) pairs.
 
-    Same (interval, recall) pairs the README transcript uses. Returns the
-    fitted stability and curve data for the chart.
+    These are example points, not logged user history: no review
+    records back them, and the provenance field says so explicitly.
+    Returns the fitted stability, curve data for the chart, and that
+    provenance metadata.
     """
     pairs = [(3.0, 0.45), (2.0, 0.30), (2.0, 0.14)]
     S_fit = fit_stability([(t, r) for t, r in pairs])
@@ -206,4 +248,9 @@ def fit_demo_data() -> dict:
         "S_fit": S_fit,
         "xs": xs,
         "curve": curve,
+        "provenance": {
+            "kind": "illustrative_fixture",
+            "source": "worked example pairs, not logged history",
+            "logged_records": 0,
+        },
     }

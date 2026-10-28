@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+### Fixed
+- Dashboard topic data now carries every binding deadline: each plan_data topic entry includes exam_days and exam_day (the latest binding deadline), validated by topic_exam_day, which fails loudly on a missing or inconsistent deadline instead of plotting against a wrong one. The dashboard and demo GIF generators use that contract, so both run on the included exams.yaml again: the dashboard forgetting curves no longer crash on a missing exam_day, and the demo GIF looks up the topic by its normalized ID (rotation) instead of the display name (Rotation).
+- The fitting demo is now labeled honestly: fit_demo_data carries provenance marking its three points as an illustrative fixture with zero logged records, and the dashboard fit chart labels them as illustrative example points instead of logged reviews. The fitted stability is unchanged.
+
+### Tests
+- 6 new regression tests in tests/test_stage3_studyforge_02.py covering the topic deadline schema, schema-mismatch failure, normalized-ID lookup, engine agreement for the forgetting curve, fit-demo provenance, and end-to-end execution of both generators (skipped where the plotly/matplotlib dashboard extras are not installed).
+
 ### Docs
 - Centered the README header: uniform dark badge labels and three action buttons in the dashboard palette (Open Dashboard, Explore Method, Run Locally) with a black label side so they stand out on the page.
 

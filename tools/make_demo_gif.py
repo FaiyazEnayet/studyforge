@@ -34,8 +34,10 @@ NAME = "Rotation"
 def main() -> None:
     cfg = st.load_config(os.path.join(ROOT, "exams.yaml"))
     data = dash.plan_data(cfg)
-    info = data["topic_info"][NAME]
-    horizon = info["exam_day"]
+    # topic_info is keyed by normalized topic ID, not display name.
+    info = data["topic_info"][st.topic_id(NAME)]
+    exam_day = dash.topic_exam_day(info)
+    horizon = exam_day
     planned = info["days"]
 
     fig, ax = plt.subplots(figsize=(7.2, 4.2))
@@ -44,15 +46,15 @@ def main() -> None:
         ax.clear()
         done = [d for d in planned if d <= frame]
         traj = dash.recall_trajectory(NAME, done, info["S0"],
-                                      info["exam_day"], horizon)
+                                      exam_day, horizon)
         ax.plot(traj["xs"], [r * 100 for r in traj["ys"]],
                 color="#264653", lw=2.5)
         if traj["review_marks"]:
             rx, ry = zip(*traj["review_marks"])
             ax.scatter(rx, [r * 100 for r in ry], color="#e76f51",
                        s=70, marker="D", zorder=5, label="reviews so far")
-        ax.axvline(info["exam_day"], color="#999", ls="--", lw=1)
-        ax.text(info["exam_day"] + 0.2, 92, "exam", color="#999", fontsize=9)
+        ax.axvline(exam_day, color="#999", ls="--", lw=1)
+        ax.text(exam_day + 0.2, 92, "exam", color="#999", fontsize=9)
         ax.set_xlim(0, horizon)
         ax.set_ylim(0, 105)
         ax.set_xlabel("day")
