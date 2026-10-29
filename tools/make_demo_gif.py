@@ -40,7 +40,9 @@ def main() -> None:
     horizon = exam_day
     planned = info["days"]
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    plt.rcParams.update({'figure.facecolor':'#eeeade','axes.facecolor':'#f7f3e7','text.color':'#344c3c','axes.labelcolor':'#344c3c','xtick.color':'#344c3c','ytick.color':'#344c3c','axes.edgecolor':'#a7ad98','font.family':'DejaVu Serif'})
+    fig, ax = plt.subplots(figsize=(9, 5.4))
+    fig.suptitle('StudyForge · planned reviews and estimated recall', fontsize=17, y=.98)
 
     def draw(frame: int):
         ax.clear()
@@ -54,7 +56,7 @@ def main() -> None:
             ax.scatter(rx, [r * 100 for r in ry], color="#e76f51",
                        s=70, marker="D", zorder=5, label="reviews so far")
         ax.axvline(exam_day, color="#999", ls="--", lw=1)
-        ax.text(exam_day + 0.2, 92, "exam", color="#999", fontsize=9)
+        ax.text(exam_day - 0.2, 92, "exam", color="#68735b", fontsize=9, ha='right')
         ax.set_xlim(0, horizon)
         ax.set_ylim(0, 105)
         ax.set_xlabel("day")
@@ -65,7 +67,9 @@ def main() -> None:
                      fontsize=11)
         if frame == 0:
             ax.legend(loc="upper right", fontsize=9)
-        fig.tight_layout()
+        ax.spines[['top','right']].set_visible(False)
+        ax.grid(axis='y',color='#d9ddcc',linewidth=.7)
+        fig.tight_layout(rect=[0,0,1,.92])
 
     anim = FuncAnimation(fig, draw, frames=list(range(horizon + 1)),
                          interval=600, repeat=False)
