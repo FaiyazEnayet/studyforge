@@ -29,6 +29,8 @@ The calendar makes the cost of competing deadlines concrete. An additional sessi
 - Compare predicted exam readiness and topic forgetting curves.
 - Evaluate an extra-hour scenario using the same planning engine.
 
+The fit visualization uses illustrative example points. It does not estimate a student’s memory parameters from logged reviews. Topic trajectories and calendar allocations are regenerated from the same committed planning inputs.
+
 ## Method
 
 A transparent forgetting curve estimates recall at each exam. Greedy allocation and local search choose fixed-length sessions under daily limits, rest days, deadlines and spacing constraints. Logged recall can personalize stability estimates.
