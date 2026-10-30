@@ -16,9 +16,20 @@ def _plan_topics(state: dict) -> list[PlanTopic]:
     """One PlanTopic per knowledge topic, with all its exam bindings.
 
     A topic shared by two exams keeps one memory state but contributes
-    to the objective at each bound exam's deadline.
+    to the objective at each bound exam's deadline. Each PlanTopic
+    also carries the topic's logged review history (ID-keyed entries
+    from the state history) and difficulty, so the planner can rebuild
+    the memory state as of an earlier exam day by event replay.
+    History entries that name a topic by display name (migrated
+    legacy states) do not match any topic ID: those topics get an
+    empty recorded history, and an as-of estimate that would need
+    their events is marked unavailable instead of fabricated.
     """
     by_id = {ex["name"]: ex for ex in state["config"]["exams"]}
+    history: dict[str, list[tuple[int, float | None]]] = {}
+    for h in state.get("history", []):
+        history.setdefault(h.get("topic"), []).append(
+            (int(h["day"]), h.get("recall")))
     pts = []
     for tid, t in state["topics"].items():
         bindings = []
@@ -27,7 +38,9 @@ def _plan_topics(state: dict) -> list[PlanTopic]:
                 if b["id"] == tid:
                     bindings.append((ex["name"], b["weight"], ex["day"]))
         S = t["S"] if t["S"] is not None else initial_stability(t["difficulty"])
-        pts.append(PlanTopic(tid, bindings, S, t["last_review"]))
+        pts.append(PlanTopic(tid, bindings, S, t["last_review"],
+                             difficulty=t["difficulty"],
+                             history=history.get(tid, [])))
     return pts
 
 
@@ -168,7 +181,7 @@ def _rebuild(state: dict, today: int, seed: int,
         ordered = sorted(topics, key=lambda t: t.name)
         from .planner import MIN_GAIN, MAX_PER_TOPIC_PER_DAY, _day_has_room
         while True:
-            base = objective(topics, plan)
+            base = objective(topics, plan, as_of=today)
             best = None
             for tp in ordered:
                 for d in range(start_day, min(horizon, tp.latest_exam_day)):
@@ -178,7 +191,7 @@ def _rebuild(state: dict, today: int, seed: int,
                     if plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
                         continue
                     plan[tp.name].append(d)
-                    gain = objective(topics, plan) - base
+                    gain = objective(topics, plan, as_of=today) - base
                     plan[tp.name].pop()
                     if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
                         best = (gain, tp.name, d)
@@ -194,8 +207,9 @@ def _rebuild(state: dict, today: int, seed: int,
     # Same local search as the standard path, but with the per-day caps,
     # so the what-if comparison stays apples to apples.
     plan = local_search(topics, plan, horizon, cfg["daily_budget_minutes"],
-                        cfg["session_minutes"], rest, today, caps=caps)
-    return plan, objective(topics, plan), horizon
+                        cfg["session_minutes"], rest, today, caps=caps,
+                        as_of=today)
+    return plan, objective(topics, plan, as_of=today), horizon
 
 
 def _diff_plans(old_sched: dict[int, list[tuple[str, int]]],
@@ -284,7 +298,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     print()
     print("Per-exam readiness (weighted recall at exam time, no more study):")
     for exam, info in st.readiness(state, today).items():
-        print(f"  {exam}: {info['readiness']:.0%} "
+        r = info["readiness"]
+        r_txt = "n/a (as-of history unavailable)" if r is None else f"{r:.0%}"
+        print(f"  {exam}: {r_txt} "
               f"({info['topics']} topics, {info['days_left']} days left)")
 
 

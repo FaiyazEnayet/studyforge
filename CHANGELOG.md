@@ -17,6 +17,12 @@
 ### Docs
 - Centered the README header: uniform dark badge labels and three action buttons in the dashboard palette (Open Dashboard, Explore Method, Run Locally) with a black label side so they stand out on the page.
 
+### Fixed
+- Evaluation is now as-of disciplined (A01). planner.simulate computes each exam's recall from the memory state as of that exam's day: when a topic shared by two exams was reviewed after the earlier exam (while studying for the later one), the earlier estimate is rebuilt by replaying the recorded review history instead of reading today's state, which previously produced impossible recalls above 1 (2.14 for a day-7 exam evaluated after a day-10 review). When the recorded history cannot reconstruct the as-of state, the estimate is marked unavailable (None) rather than fabricated. Planning objectives take an explicit as-of day: only exams still in the future participate in forward replanning, so replan and what-if no longer count a past exam's contribution. state.readiness applies the same rule to past exams and reports None for unavailable ones; the status command prints those as "n/a (as-of history unavailable)". dashboard plan_data now credits a shared topic's sessions and minutes to an exam only when the session falls before that exam's deadline; the included exams.yaml has no shared topics, so its published figures are unchanged.
+
+### Tests
+- 8 new tests in tests/test_stage3_studyforge_01.py: the day7/day21 shared-topic counterexample with hand-derived as-of values, the no-reviews-before-exam case that distinguishes reconstruction from clipping (exactly 0, not 1), past-exam exclusion from the replan objective, historical readiness invariance to later reviews, unavailable marking for display-name legacy history, before-deadline session attribution in plan_data, a finite-probability sweep, and a no-lost-bindings guard. Written before the fix: 7 failed and 1 passed on the pre-fix code.
+
 ## v1.1.0
 
 ### Fixed
