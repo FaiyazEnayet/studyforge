@@ -227,32 +227,91 @@ def load_state(path: str = DEFAULT_STATE) -> dict:
     return migrate_state(state)
 
 
+def _asof_topic_state(state: dict, tid: str, day: int):
+    """One topic's memory state as of `day`, or None if unavailable.
+
+    Mirrors the planner's as-of rule: only reviews strictly before
+    `day` may inform the estimate. If every logged review precedes
+    `day`, the stored state already is the as-of state. Otherwise the
+    state is rebuilt by replaying the topic's ID-keyed history entries
+    before `day` through the memory model's update rule, using the
+    observed recall where one was logged.
+
+    Returns None when the recorded history does not cover the stored
+    state: a migrated legacy state, whose history entries name topics
+    by display name, has no ID-keyed events backing its (S,
+    last_review), so the as-of state cannot be reconstructed and the
+    caller must mark the estimate unavailable rather than evaluating
+    it from today's state.
+    """
+    from .memory import TopicState
+
+    t = state["topics"][tid]
+    lr = t["last_review"]
+    if lr is None or lr < day:
+        return TopicState(
+            name=t["name"],
+            difficulty=t["difficulty"],
+            S=t["S"],
+            last_review=lr,
+        )
+    events = [
+        (int(h["day"]), h.get("recall"))
+        for h in state.get("history", [])
+        if h.get("topic") == tid
+    ]
+    if not events or max(d for d, _ in events) < lr:
+        return None
+    ts = TopicState(name=t["name"], difficulty=t["difficulty"])
+    for d, r in sorted(events):
+        if d >= day:
+            break
+        ts.review(d, R=r)
+    return ts
+
+
 def readiness(state: dict, today: int) -> dict[str, dict]:
     """Per-exam readiness: weight normalized recall across its topics.
 
     For each exam, readiness = sum(weight * predicted recall at exam day)
-    / sum(weights), using current memory state and no further study.
-    A topic bound to several exams contributes to each with that
-    binding's weight and deadline, over the one shared memory state.
-    Returns {exam_name: {"readiness": 0..1, "days_left": int, "topics": n}}.
+    / sum(weights), using no further study. A topic bound to several
+    exams contributes to each with that binding's weight and deadline,
+    over the one shared memory state.
+
+    The estimate is as-of the exam day. For an exam still in the
+    future, the current memory state is the as-of state. For an exam
+    on or before `today`, the estimate is historical: each topic's
+    state is rebuilt as of the exam day (see _asof_topic_state), so
+    reviews logged after the exam never leak into it. When a bound
+    topic's as-of state cannot be reconstructed, the exam's readiness
+    is None (unavailable) instead of a number evaluated from today's
+    state. Returns {exam_name: {"readiness": 0..1 or None,
+    "days_left": int, "topics": n}}.
     """
     from .memory import TopicState
 
     out: dict[str, dict] = {}
     for ex in state["config"]["exams"]:
         num, den = 0.0, 0.0
+        unavailable = False
         for b in ex["topics"]:
-            t = state["topics"][b["id"]]
-            ts = TopicState(
-                name=t["name"],
-                difficulty=t["difficulty"],
-                S=t["S"],
-                last_review=t["last_review"],
-            )
+            if ex["day"] > today:
+                t = state["topics"][b["id"]]
+                ts = TopicState(
+                    name=t["name"],
+                    difficulty=t["difficulty"],
+                    S=t["S"],
+                    last_review=t["last_review"],
+                )
+            else:
+                ts = _asof_topic_state(state, b["id"], ex["day"])
+                if ts is None:
+                    unavailable = True
+                    break
             num += b["weight"] * ts.recall_on(ex["day"])
             den += b["weight"]
         out[ex["name"]] = {
-            "readiness": (num / den) if den else 0.0,
+            "readiness": None if unavailable else (num / den if den else 0.0),
             "days_left": ex["day"] - today,
             "topics": len(ex["topics"]),
         }

@@ -119,14 +119,18 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
         n_topics = 0
         for name, info in topic_info.items():
             for (b_ex, w, _), R in zip(info["bindings"], info["recalls"]):
-                if b_ex != ex["name"]:
+                if b_ex != ex["name"] or R is None:
                     continue
                 num += w * R
                 den += w
                 n_topics += 1
             if ex["name"] in info["exams"]:
-                minutes += info["minutes"]
-                sessions += info["sessions"]
+                # Credit only sessions held before this exam's
+                # deadline: a shared topic's later sessions serve its
+                # later exams, not this one.
+                before = sum(1 for d in info["days"] if d < ex["day"])
+                sessions += before
+                minutes += before * sess
         exam_summary[ex["name"]] = {
             "day": ex["day"],
             "topics": n_topics,
