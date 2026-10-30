@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+### Added
+- Persisted state now carries an explicit `schema_version` (current format: 1), stamped by `new_state` and every save. `load_state` migrates legacy version 0 files (the pre-ST1 format with no version field: topics keyed by display name, exam/deadline/weight stored on the topic) to the current format in memory, rebuilding exam bindings from the config so a topic shared by two exams keeps one memory state and both bindings. Migration is idempotent, and corrupt or unmigratable input raises a clear error without modifying the file on disk. This completes the ST1 foundation's schema-version and migration components.
+
+### Tests
+- 8 new tests in tests/test_stage3_studyforge_st1.py covering legacy migration against a fixture built field-for-field from the pre-85e175b state format (including the shared-topic-two-exams case), migration idempotence, round-trip serialization stability, unchanged loading of current-format files, and non-destructive failure on corrupt, unmigratable, and future-version state files.
+
 ### Fixed
 - Dashboard topic data now carries every binding deadline: each plan_data topic entry includes exam_days and exam_day (the latest binding deadline), validated by topic_exam_day, which fails loudly on a missing or inconsistent deadline instead of plotting against a wrong one. The dashboard and demo GIF generators use that contract, so both run on the included exams.yaml again: the dashboard forgetting curves no longer crash on a missing exam_day, and the demo GIF looks up the topic by its normalized ID (rotation) instead of the display name (Rotation).
 - The fitting demo is now labeled honestly: fit_demo_data carries provenance marking its three points as an illustrative fixture with zero logged records, and the dashboard fit chart labels them as illustrative example points instead of logged reviews. The fitted stability is unchanged.
