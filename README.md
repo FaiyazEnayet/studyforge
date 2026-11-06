@@ -61,7 +61,7 @@ python tools/make_dashboard.py
 
 ## Technical design
 
-StudyForge models recall with an exponential forgetting curve and increases stability when a review occurs. Fixed-length sessions are allocated using greedy marginal gain followed by local improvement. Daily capacity, rest days, exam deadlines and a spacing guardrail constrain the plan.
+StudyForge models recall with an exponential forgetting curve and increases stability when a review occurs. Fixed-length sessions are allocated using greedy marginal gain followed by local improvement. Daily capacity, rest days, exam deadlines and a spacing guardrail constrain the plan. The planner invariants (topic identity, schema version and migration, calculation semantics, backup) are recorded in docs/planner-invariants.md.
 
 ```mermaid
 flowchart LR
@@ -92,7 +92,7 @@ Dashboard topic data uses one entry per normalized topic ID, with `exam_days` li
 
 - Initial curve parameters are defaults until enough personal recall data is logged.
 - Recall optimization is not a model of conceptual understanding.
-- Topic names currently collide across exams and need stable exam/topic identifiers.
+- Topic identity is stable: topics are keyed by a slug ID shared across exams, and names that slug to the same ID are rejected (see docs/planner-invariants.md).
 
 ## License
 

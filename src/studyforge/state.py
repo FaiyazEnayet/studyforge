@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import shutil
 from datetime import date, datetime
 
 import yaml
@@ -652,7 +653,19 @@ def _migrate_v0(state: dict) -> dict:
 
 
 def save_state(state: dict, path: str = DEFAULT_STATE) -> None:
+    """Write `state` to `path`, preserving a backup of the previous file.
+
+    The previous state file, when one exists, is copied to
+    ``<path>.bak`` before the new state is written, so a save never
+    destroys the last good state: the backup always holds the
+    immediately previous saved state and nothing older. A first save
+    creates no backup. The backup is a byte copy of the previous
+    file, so it round-trips through load_state exactly as the file
+    it came from did.
+    """
     state["schema_version"] = SCHEMA_VERSION
+    if os.path.exists(path):
+        shutil.copyfile(path, path + ".bak")
     with open(path, "w") as f:
         json.dump(state, f, indent=1)
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 ### Added
+- Planner invariants and migration are now documented in one place (docs/planner-invariants.md): stable topic identity plus the exam binding contract, the persisted schema version and migration from the pre-ST1 format, idempotent migration, round-trip serialization, non-destructive failure, calculation semantics, as-of evaluation discipline, same-day review behavior, rest days and the no-review prior, and deterministic regeneration of the example plan (72 sessions, objective 2.278051). Most items were already enforced and are recorded as verified present with the code and test that pin each one; the one missing item is fixed here.
+- Saving a state file now preserves a backup of the previous state at `<state path>.bak` before overwriting, so a save never destroys the last good state. The backup always holds the immediately previous saved state; a first save creates no backup.
+- The planner's same-day review behavior is now documented explicitly in `simulate`: a session on the same day as the last review (logged or planned) is a no-op, so at most one session per topic per day affects the memory state.
+- The README Limitations entry claiming topic names collide across exams was stale since v1.1.0 (topics are keyed by stable slug IDs): it now states the stable identity rule.
+
+### Tests
+- 10 new tests in tests/test_stage3_studyforge_7.py: backup preservation on save (byte-identical backup, only the immediately previous state, round-trip still works with a backup present), same-day planner behavior (session on the last review day and a second same-day session are both no-ops, a next-day session counts), deterministic regeneration of the example plan (identical plan and objective across two fresh builds, 72 sessions, objective 2.278051), round-trip serialization stability, idempotent migration, and loading a legacy state without touching the file. Written before the fix: the 3 backup tests failed and the 7 pinning tests passed on the pre-fix code.
+
+### Added
 - Scheduler inputs and persisted state are now validated with explicit, user-actionable errors. Config loading and state creation reject zero or negative session lengths and daily caps, nonfinite or non-positive weights, duplicate exam names, an empty exam set, exams with no topics, missing or negative exam days, difficulty outside 1 to 5, and topic names that slug to the same ID. Loading a state file rejects bindings to unknown topics, topics bound to no exam, nonfinite or non-positive stability, and history entries with a bad day, a recall outside 0 to 1, or a review day earlier than the same topic's previous review. The planner rejects nonfinite or non-positive stability, empty or duplicate exam bindings, and zero or negative scheduling parameters. Elapsed exams are still planned around rather than rejected: the as-of rule excludes them from forward planning. This builds on the ST1 schema version and migration foundation.
 
 ### Tests
