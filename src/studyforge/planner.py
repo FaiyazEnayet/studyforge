@@ -290,6 +290,14 @@ def simulate(
     day has recall zero there. Its first review is treated as full
     learning (R = 0 at review, so stability doubles), regardless of
     which day it falls on.
+
+    Same-day reviews change nothing: a planned session on the same day
+    as the last review (logged or planned) is skipped, because a repeat
+    review on the same day sees recall 1 and gains no stability (see
+    memory: same-day repeat reviews gain nothing). At most one session
+    per topic per day affects the memory state, so the two-per-day cap
+    is a scheduling guardrail against cramming, not two learning
+    events.
     """
     S, lr = topic.S, topic.last_review
     for d in session_days:
