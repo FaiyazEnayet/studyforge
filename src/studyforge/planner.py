@@ -42,6 +42,93 @@ MIN_GAIN = 1e-12
 MAX_PASSES = 100
 
 
+def _require_int(value, label: str) -> int:
+    """A whole-number input, or a ValueError naming the fix."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{label} must be a whole number, got {value!r}; "
+            "use a plain number without quotes or a decimal point"
+        )
+    return value
+
+
+def _require_positive_int(value, label: str) -> int:
+    """A whole number greater than zero, or a ValueError naming the fix."""
+    v = _require_int(value, label)
+    if v <= 0:
+        raise ValueError(
+            f"{label} must be greater than 0, got {v}; "
+            "use a positive number"
+        )
+    return v
+
+
+def _require_finite(value, label: str) -> float:
+    """A finite number, or a ValueError naming the fix."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"{label} must be a number, got {value!r}; "
+            "use a plain number without quotes"
+        )
+    f = float(value)
+    if not math.isfinite(f):
+        raise ValueError(
+            f"{label} must be finite, got {value!r}; "
+            "replace it with an ordinary number"
+        )
+    return f
+
+
+def _validate_schedule_args(topics, horizon, daily_cap, session_min,
+                            rest_days, start_day, as_of=None, caps=None,
+                            max_passes=None):
+    """Check the scheduling parameters shared by greedy and local search.
+
+    Zero or negative session lengths and daily caps, a negative horizon
+    or start day, and non-positive per-day caps are rejected with an
+    explicit error naming the bad value.
+    """
+    if not isinstance(topics, (list, tuple)) or not topics:
+        raise ValueError(
+            "build a plan for at least one topic: the topic list is empty"
+        )
+    horizon = _require_int(horizon, "horizon")
+    if horizon < 0:
+        raise ValueError(
+            f"horizon must be 0 or later, got {horizon}; use the latest "
+            "exam day as the horizon"
+        )
+    _require_positive_int(daily_cap, "daily_cap")
+    _require_positive_int(session_min, "session_min")
+    start_day = _require_int(start_day, "start_day")
+    if start_day < 0:
+        raise ValueError(
+            f"start_day must be 0 or later, got {start_day}; days count "
+            "forward from today (day 0)"
+        )
+    if rest_days is not None:
+        for d in rest_days:
+            dv = _require_int(d, "rest day")
+            if dv < 0:
+                raise ValueError(
+                    f"rest day must be 0 or later, got {dv}"
+                )
+    if as_of is not None:
+        as_of = _require_int(as_of, "as_of")
+        if as_of < 0:
+            raise ValueError(
+                f"as_of must be 0 or later, got {as_of}"
+            )
+    if caps is not None:
+        for day, cap in caps.items():
+            dv = _require_int(day, "cap day")
+            if dv < 0:
+                raise ValueError(f"cap day must be 0 or later, got {dv}")
+            _require_positive_int(cap, f"cap for day {dv}")
+    if max_passes is not None:
+        _require_positive_int(max_passes, "max_passes")
+
+
 class PlanTopic:
     """One knowledge topic with its exam bindings.
 
@@ -67,6 +154,75 @@ class PlanTopic:
         difficulty: int | None = None,
         history: list[tuple[int, float | None]] | None = None,
     ) -> None:
+        if not bindings:
+            raise ValueError(
+                f"topic {name!r} needs at least one exam binding: bind "
+                "it to an exam with a weight and an exam day"
+            )
+        seen_exams: set[str] = set()
+        for e, w, d in bindings:
+            if not isinstance(e, str) or not e.strip():
+                raise ValueError(
+                    f"each binding for topic {name!r} needs a non-empty "
+                    "exam name"
+                )
+            if e in seen_exams:
+                raise ValueError(
+                    f"duplicate binding for exam {e!r} on topic {name!r}: "
+                    "bind the topic to each exam once"
+                )
+            seen_exams.add(e)
+            wv = _require_finite(
+                w, f"weight for topic {name!r} in exam {e!r}")
+            if wv <= 0:
+                raise ValueError(
+                    f"weight for topic {name!r} in exam {e!r} must be "
+                    f"greater than 0, got {wv}"
+                )
+            dv = _require_int(
+                d, f"exam day for topic {name!r} in exam {e!r}")
+            if dv < 0:
+                raise ValueError(
+                    f"exam day for topic {name!r} in exam {e!r} must be "
+                    f"0 or later, got {dv}"
+                )
+        s_val = _require_finite(S, f"stability for topic {name!r}")
+        if s_val <= 0:
+            raise ValueError(
+                f"stability for topic {name!r} must be greater than 0, "
+                f"got {s_val}; stability comes from the difficulty "
+                "rating or a fitted value"
+            )
+        if last_review is not None:
+            lr = _require_int(last_review, f"last_review for topic {name!r}")
+            if lr < 0:
+                raise ValueError(
+                    f"last_review for topic {name!r} must be 0 or later, "
+                    f"got {lr}"
+                )
+        if difficulty is not None:
+            diff = _require_int(difficulty, f"difficulty for topic {name!r}")
+            if not 1 <= diff <= 5:
+                raise ValueError(
+                    f"difficulty for topic {name!r} must be between 1 "
+                    f"and 5, got {diff}"
+                )
+        if history is not None:
+            for d, r in history:
+                dv = _require_int(d, f"review day for topic {name!r}")
+                if dv < 0:
+                    raise ValueError(
+                        f"review day for topic {name!r} must be 0 or "
+                        f"later, got {dv}"
+                    )
+                if r is not None:
+                    rv = _require_finite(r, f"recall for topic {name!r}")
+                    if not 0.0 <= rv <= 1.0:
+                        raise ValueError(
+                            f"recall for topic {name!r} must be between 0 "
+                            f"and 1, got {rv}; log the fraction actually "
+                            "remembered"
+                        )
         self.name = name
         self.bindings = [(str(e), float(w), int(d)) for e, w, d in bindings]
         self.S = float(S)
@@ -136,6 +292,13 @@ def simulate(
     which day it falls on.
     """
     S, lr = topic.S, topic.last_review
+    for d in session_days:
+        dv = _require_int(d, f"session day for topic {topic.name!r}")
+        if dv < 0:
+            raise ValueError(
+                f"session day for topic {topic.name!r} must be 0 or "
+                f"later, got {dv}"
+            )
     # chronological pass over planned sessions for the final S
     for d in sorted(session_days):
         if lr is not None and (d <= lr or S <= 0):
@@ -184,6 +347,10 @@ def objective(
     chase) it. Bindings whose as-of recall is unavailable (None)
     never contribute.
     """
+    if as_of is not None:
+        as_of = _require_int(as_of, "as_of")
+        if as_of < 0:
+            raise ValueError(f"as_of must be 0 or later, got {as_of}")
     total = 0.0
     for tp in topics:
         _, Rs = simulate(tp, plan.get(tp.name, []))
@@ -216,6 +383,8 @@ def greedy(
     as_of: int | None = None,
 ) -> dict[str, list[int]]:
     """Greedily add the highest marginal gain session until none helps."""
+    _validate_schedule_args(topics, horizon, daily_cap, session_min,
+                            rest_days, start_day, as_of=as_of)
     plan: dict[str, list[int]] = {tp.name: [] for tp in topics}
     used: dict[int, int] = {}
     ordered = sorted(topics, key=lambda t: t.name)
@@ -256,6 +425,17 @@ def local_search(
     as_of: int | None = None,
 ) -> dict[str, list[int]]:
     """Best improvement moves until convergence. Deterministic."""
+    _validate_schedule_args(topics, horizon, daily_cap, session_min,
+                            rest_days, start_day, as_of=as_of, caps=caps,
+                            max_passes=max_passes)
+    for name, days in plan.items():
+        for d in days:
+            dv = _require_int(d, f"planned day for topic {name!r}")
+            if dv < 0:
+                raise ValueError(
+                    f"planned day for topic {name!r} must be 0 or later, "
+                    f"got {dv}"
+                )
     plan = {k: sorted(v) for k, v in plan.items()}
     ordered = sorted(topics, key=lambda t: t.name)
     by_name = {tp.name: tp for tp in topics}
@@ -346,6 +526,8 @@ def build_plan(
     exam's contribution.
     """
     _ = seed
+    _validate_schedule_args(topics, horizon, daily_cap, session_min,
+                            rest_days, start_day, as_of=as_of)
     rest = set(rest_days or ())
     if as_of is None:
         as_of = start_day
