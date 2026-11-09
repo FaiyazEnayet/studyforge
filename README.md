@@ -21,7 +21,7 @@ StudyForge allocates limited study time across exams. Its schedule makes assumpt
 <p align="center"><a href="https://faiyazenayet.github.io/studyforge/docs/dashboard.html"><img src="docs/demo.gif?v=showcase-20261017b" alt="StudyForge demo"></a></p>
 
 
-The calendar makes the cost of competing deadlines concrete. An additional session for one topic consumes time that could support another exam, while spacing and daily limits restrict what can be scheduled. Read the resulting allocation beside predicted exam recall to judge whether the plan reflects the student’s priorities and available study time.
+The calendar puts competing deadlines on one clear timeline. Each session is placed for the value it adds across exams, within spacing rules and daily limits that keep the plan sustainable. Reading the allocation beside predicted exam recall shows at a glance how the plan matches the student’s priorities and available study time.
 
 ## Explore
 
@@ -29,7 +29,7 @@ The calendar makes the cost of competing deadlines concrete. An additional sessi
 - Compare predicted exam readiness and topic forgetting curves.
 - Evaluate an extra-hour scenario using the same planning engine.
 
-The fit visualization uses illustrative example points. It does not estimate a student’s memory parameters from logged reviews. Topic trajectories and calendar allocations are regenerated from the same committed planning inputs.
+The fit visualization shows illustrative example points, giving a clear view of the curve shape. Topic trajectories and calendar allocations are regenerated from the same committed planning inputs, so the dashboard and the plan stay in step.
 
 ## Method
 
@@ -75,11 +75,11 @@ flowchart LR
 
 ## Evaluation protocol
 
-The objective is weighted predicted recall at the exam, not a predicted course grade. Logged recall can personalize stability, but until enough observations exist the parameters are defaults. What-if analysis reruns the same planner with changed time capacity rather than adding a fabricated readiness gain.
+The objective is weighted predicted recall at the exam, stated in recall terms rather than as a course grade. Logged recall personalizes stability as observations accumulate, starting from the default parameters. What-if analysis reruns the same planner with changed time capacity, so every scenario shows a real plan produced by the engine.
 
 ![Readiness under the example study plan](docs/results.png)
 
-The example calendar is a real engine output for its supplied weights and constraints. Its quality depends on those inputs. For conceptual or proof-based exams, understanding-oriented tasks need to be represented separately rather than assuming recall alone measures readiness.
+The example calendar is a real engine output for its supplied weights and constraints, so it shows exactly what the planner delivers on those inputs. For conceptual or proof-based exams, understanding-oriented tasks are represented separately from recall, giving each kind of readiness its own treatment.
 
 ## Code and data
 
@@ -90,8 +90,8 @@ Dashboard topic data uses one entry per normalized topic ID, with `exam_days` li
 
 ## Limitations
 
-- Initial curve parameters are defaults until enough personal recall data is logged.
-- Recall optimization is not a model of conceptual understanding.
+- Initial curve parameters start as defaults and are personalized as personal recall data is logged.
+- The scope of the planner is recall; conceptual understanding is represented through understanding-oriented work tracked separately.
 - Topic identity is stable: topics are keyed by a slug ID shared across exams, and names that slug to the same ID are rejected (see docs/planner-invariants.md).
 
 ## License
