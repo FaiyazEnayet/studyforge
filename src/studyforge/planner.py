@@ -35,11 +35,23 @@ from __future__ import annotations
 
 import math
 
-from .memory import GROWTH
+from .models import ExponentialModel, get_model
+
+# The model used whenever none is chosen: the unchanged baseline.
+_DEFAULT_MODEL = ExponentialModel()
 
 MAX_PER_TOPIC_PER_DAY = 2
 MIN_GAIN = 1e-12
 MAX_PASSES = 100
+
+
+def _resolve_model(model, topic=None):
+    """The model for a computation: explicit, then the topic's, then default."""
+    if model is not None:
+        return model
+    if topic is not None and getattr(topic, "model", None) is not None:
+        return topic.model
+    return _DEFAULT_MODEL
 
 
 def _require_int(value, label: str) -> int:
@@ -153,6 +165,7 @@ class PlanTopic:
         last_review: int | None,
         difficulty: int | None = None,
         history: list[tuple[int, float | None]] | None = None,
+        model=None,
     ) -> None:
         if not bindings:
             raise ValueError(
@@ -232,6 +245,10 @@ class PlanTopic:
             None if history is None
             else sorted((int(d), r) for d, r in history)
         )
+        # The memory model this topic is evaluated with. None means
+        # the default exponential model, so existing callers change
+        # nothing by leaving it out.
+        self.model = model
 
     @property
     def latest_exam_day(self) -> int:
@@ -239,7 +256,7 @@ class PlanTopic:
 
 
 def _asof_base(
-    topic: PlanTopic, exam_day: int
+    topic: PlanTopic, exam_day: int, model=None
 ) -> tuple[float, int | None] | None:
     """Memory state (S, last_review) as of `exam_day`, or None.
 
@@ -247,8 +264,9 @@ def _asof_base(
     estimate for that day. If every logged review precedes the exam,
     the topic's current state already is the as-of state. Otherwise
     the state is rebuilt by replaying the topic's recorded review
-    history from its initial stability, applying the memory model's
-    update rule with the observed recall where one was logged.
+    history from its initial stability through the model, applying
+    the observed recall where one was logged. The returned stability
+    is in StudyForge units whatever model ran the replay.
 
     Returns None when the recorded history does not cover the current
     state (no history was supplied, or its latest event predates
@@ -257,6 +275,7 @@ def _asof_base(
     the caller must mark the estimate unavailable instead of
     evaluating it from today's state.
     """
+    model = _resolve_model(model, topic)
     lr = topic.last_review
     if lr is None or lr < exam_day:
         return topic.S, lr
@@ -264,18 +283,19 @@ def _asof_base(
         return None
     if not topic.history or max(d for d, _ in topic.history) < lr:
         return None
-    from .memory import TopicState
+    from .memory import initial_stability
 
-    ts = TopicState(name=topic.name, difficulty=topic.difficulty)
+    state = model.from_stability(
+        initial_stability(topic.difficulty), None, topic.difficulty)
     for d, r in topic.history:
         if d >= exam_day:
             break
-        ts.review(d, R=r)
-    return ts.S, ts.last_review
+        state = model.transition(state, d, outcome=r)
+    return model.to_stability(state), state.last_review
 
 
 def simulate(
-    topic: PlanTopic, session_days: list[int]
+    topic: PlanTopic, session_days: list[int], model=None
 ) -> tuple[float, list[float | None]]:
     """Simulate reviews on the given days.
 
@@ -289,16 +309,16 @@ def simulate(
     unavailable, not fabricated. A topic never reviewed as of an exam
     day has recall zero there. Its first review is treated as full
     learning (R = 0 at review, so stability doubles), regardless of
-    which day it falls on.
+    which day it falls on. The final S is in StudyForge units.
 
-    Same-day reviews change nothing: a planned session on the same day
-    as the last review (logged or planned) is skipped, because a repeat
-    review on the same day sees recall 1 and gains no stability (see
-    memory: same-day repeat reviews gain nothing). At most one session
-    per topic per day affects the memory state, so the two-per-day cap
-    is a scheduling guardrail against cramming, not two learning
-    events.
+    `model` selects the memory model (a model instance, or a registry
+    name); with none given the topic's model applies, else the
+    default exponential model, so existing callers see the unchanged
+    baseline behavior.
     """
+    if isinstance(model, str):
+        model = get_model(model)
+    model = _resolve_model(model, topic)
     S, lr = topic.S, topic.last_review
     for d in session_days:
         dv = _require_int(d, f"session day for topic {topic.name!r}")
@@ -308,37 +328,32 @@ def simulate(
                 f"later, got {dv}"
             )
     # chronological pass over planned sessions for the final S
+    state = model.from_stability(S, lr, topic.difficulty or 3)
     for d in sorted(session_days):
         if lr is not None and (d <= lr or S <= 0):
             continue
-        if lr is None:
-            R = 0.0
-        else:
-            R = math.exp(-(d - lr) / S)
-        S = S * (1.0 + GROWTH * (1.0 - R))
-        lr = d
+        state = model.transition(state, d)
+        S, lr = model.to_stability(state), state.last_review
     recalls: list[float | None] = []
     for _, _, exam_day in topic.bindings:
-        base = _asof_base(topic, exam_day)
+        base = _asof_base(topic, exam_day, model)
         if base is None:
             recalls.append(None)
             continue
         S_e, lr_e = base
+        state_e = model.from_stability(
+            S_e, lr_e, topic.difficulty or 3)
         for d in sorted(session_days):
             if d >= exam_day:
                 break
             if lr_e is not None and (d <= lr_e or S_e <= 0):
                 continue
-            if lr_e is None:
-                R = 0.0
-            else:
-                R = math.exp(-(d - lr_e) / S_e)
-            S_e = S_e * (1.0 + GROWTH * (1.0 - R))
-            lr_e = d
+            state_e = model.transition(state_e, d)
+            S_e, lr_e = model.to_stability(state_e), state_e.last_review
         if lr_e is None or S_e <= 0:
             recalls.append(0.0)
         else:
-            recalls.append(math.exp(-(exam_day - lr_e) / S_e))
+            recalls.append(model.predict(state_e, exam_day - lr_e))
     return S, recalls
 
 
@@ -346,6 +361,7 @@ def objective(
     topics: list[PlanTopic],
     plan: dict[str, list[int]],
     as_of: int | None = None,
+    model=None,
 ) -> float:
     """Sum over topics and their exam bindings of weight * recall.
 
@@ -353,7 +369,8 @@ def objective(
     as-of day contribute: a past exam's outcome can no longer be
     changed by planning, so forward replanning must not count (or
     chase) it. Bindings whose as-of recall is unavailable (None)
-    never contribute.
+    never contribute. `model` selects the memory model; with none
+    given each topic's own model applies, else the default.
     """
     if as_of is not None:
         as_of = _require_int(as_of, "as_of")
@@ -361,7 +378,7 @@ def objective(
             raise ValueError(f"as_of must be 0 or later, got {as_of}")
     total = 0.0
     for tp in topics:
-        _, Rs = simulate(tp, plan.get(tp.name, []))
+        _, Rs = simulate(tp, plan.get(tp.name, []), model=model)
         for (_, w, exam_day), R in zip(tp.bindings, Rs):
             if R is None:
                 continue
@@ -389,6 +406,7 @@ def greedy(
     rest_days: set[int],
     start_day: int = 0,
     as_of: int | None = None,
+    model=None,
 ) -> dict[str, list[int]]:
     """Greedily add the highest marginal gain session until none helps."""
     _validate_schedule_args(topics, horizon, daily_cap, session_min,
@@ -397,7 +415,7 @@ def greedy(
     used: dict[int, int] = {}
     ordered = sorted(topics, key=lambda t: t.name)
     while True:
-        base = objective(topics, plan, as_of=as_of)
+        base = objective(topics, plan, as_of=as_of, model=model)
         best: tuple[float, str, int] | None = None
         for tp in ordered:
             last_day = min(horizon, tp.latest_exam_day)
@@ -407,7 +425,7 @@ def greedy(
                 if plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
                     continue
                 plan[tp.name].append(d)
-                gain = objective(topics, plan, as_of=as_of) - base
+                gain = objective(topics, plan, as_of=as_of, model=model) - base
                 plan[tp.name].pop()
                 if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
                     best = (gain, tp.name, d)
@@ -431,6 +449,7 @@ def local_search(
     max_passes: int = MAX_PASSES,
     caps: dict[int, int] | None = None,
     as_of: int | None = None,
+    model=None,
 ) -> dict[str, list[int]]:
     """Best improvement moves until convergence. Deterministic."""
     _validate_schedule_args(topics, horizon, daily_cap, session_min,
@@ -459,7 +478,7 @@ def local_search(
         return u
 
     for _ in range(max_passes):
-        base = objective(topics, plan, as_of=as_of)
+        base = objective(topics, plan, as_of=as_of, model=model)
         used = used_minutes(plan)
         best: tuple[float, tuple] | None = None
 
@@ -467,7 +486,7 @@ def local_search(
         for name, d in sessions:
             # candidate 1: drop the session
             plan[name].remove(d)
-            gain = objective(topics, plan, as_of=as_of) - base
+            gain = objective(topics, plan, as_of=as_of, model=model) - base
             plan[name].append(d)
             plan[name].sort()
             if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
@@ -492,7 +511,8 @@ def local_search(
                     plan[name].remove(d)
                     plan[tp2.name].append(d2)
                     plan[tp2.name].sort()
-                    gain = objective(topics, plan, as_of=as_of) - base
+                    gain = objective(topics, plan, as_of=as_of,
+                                     model=model) - base
                     plan[tp2.name].remove(d2)
                     plan[name].append(d)
                     plan[name].sort()
@@ -521,6 +541,7 @@ def build_plan(
     start_day: int = 0,
     seed: int = 0,
     as_of: int | None = None,
+    model=None,
 ) -> tuple[dict[str, list[int]], float]:
     """Greedy allocation followed by local search.
 
@@ -531,7 +552,8 @@ def build_plan(
     The objective is evaluated as of `as_of` (default: `start_day`,
     the day planning starts): only exams still in the future at that
     day participate, so replanning never counts or chases a past
-    exam's contribution.
+    exam's contribution. `model` selects the memory model; with none
+    given each topic's own model applies, else the default.
     """
     _ = seed
     _validate_schedule_args(topics, horizon, daily_cap, session_min,
@@ -540,10 +562,10 @@ def build_plan(
     if as_of is None:
         as_of = start_day
     plan = greedy(topics, horizon, daily_cap, session_min, rest, start_day,
-                  as_of=as_of)
+                  as_of=as_of, model=model)
     plan = local_search(topics, plan, horizon, daily_cap, session_min, rest,
-                        start_day, as_of=as_of)
-    return plan, objective(topics, plan, as_of=as_of)
+                        start_day, as_of=as_of, model=model)
+    return plan, objective(topics, plan, as_of=as_of, model=model)
 
 
 def to_schedule(
