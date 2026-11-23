@@ -20,6 +20,8 @@ import math
 
 from . import cli as _cli
 from .memory import TopicState, fit_stability, initial_stability
+from .models import ExponentialModel, get_model
+from .models.base import ModelState
 from .planner import PlanTopic, build_plan, simulate, to_schedule
 
 
@@ -68,7 +70,8 @@ def topic_exam_day(info: dict) -> int:
     return exam_day
 
 
-def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
+def plan_data(config: dict, today: int = 0, seed: int = 0,
+              model=None) -> dict:
     """Run the real planner and return everything the dashboard needs.
 
     Returns a dict with: plan (topic -> sorted days), objective,
@@ -76,15 +79,21 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
     (sessions, final stability, recall at exam, bindings, exam_days,
     and exam_day as the latest binding deadline), per-exam summary
     (sessions, minutes, weighted recall at exam after the plan),
-    per-day minutes used, and session counts.
+    per-day minutes used, session counts, and model_version tagging
+    which memory model produced the predictions. `model` selects the
+    memory model; with none given the default exponential model runs.
     """
+    if isinstance(model, str):
+        model = get_model(model)
+    if model is None:
+        model = ExponentialModel()
     topics = fresh_topics(config)
     horizon = max(t.latest_exam_day for t in topics)
     rest = set(config["rest_days"])
     daily = config["daily_budget_minutes"]
     sess = config["session_minutes"]
     plan, obj = build_plan(topics, horizon, daily, sess, rest,
-                           start_day=today, seed=seed)
+                           start_day=today, seed=seed, model=model)
     sched = to_schedule(plan, sess)
     by_name = {t.name: t for t in topics}
     from .state import topic_id as _tid
@@ -96,7 +105,7 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
     topic_info = {}
     for name, days in plan.items():
         tp = by_name[name]
-        S_final, recalls = simulate(tp, days)
+        S_final, recalls = simulate(tp, days, model=model)
         topic_info[name] = {
             "exams": exam_of[name],
             "sessions": len(days),
@@ -146,6 +155,7 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
         "config": config,
         "plan": plan,
         "objective": obj,
+        "model_version": model.version,
         "schedule": sched,
         "horizon": horizon,
         "topic_info": topic_info,
@@ -160,14 +170,20 @@ def plan_data(config: dict, today: int = 0, seed: int = 0) -> dict:
 def recall_trajectory(name: str, plan_days: list[int], S0: float,
                       exam_day: int, horizon: int,
                       last_review: int | None = None,
-                      resolution: int = 4) -> dict:
+                      resolution: int = 4, model=None) -> dict:
     """Day-by-day recall curve for one topic under its planned reviews.
 
-    Walks the real TopicState forward: records recall each day, then
-    applies the review update on review days. Returns xs, recall ys,
-    the review day markers, and the final stability.
+    Walks the model forward: records recall each day, then applies
+    the review update on review days. Returns xs, recall ys, the
+    review day markers, and the final stability (in StudyForge units).
+    `model` selects the memory model; with none given the default
+    exponential model runs, reproducing the previous behavior.
     """
-    ts = TopicState(name=name, S=S0, last_review=last_review)
+    if isinstance(model, str):
+        model = get_model(model)
+    if model is None:
+        model = ExponentialModel()
+    state = model.from_stability(S0, last_review)
     review_days = set(plan_days)
     xs: list[float] = []
     ys: list[float] = []
@@ -175,19 +191,26 @@ def recall_trajectory(name: str, plan_days: list[int], S0: float,
     for i in range(horizon * resolution + 1):
         day = i / resolution
         xs.append(day)
-        ys.append(ts.recall_on(day))
+        if state.last_review is None:
+            ys.append(0.0)
+        else:
+            ys.append(model.predict(state, day - state.last_review))
         # Reviews land on whole days: record the pre-review recall,
         # then apply the update. The mark sits at the dip where the
         # review actually happened.
         if day == int(day) and int(day) in review_days:
-            marks.append((day, ts.recall_on(day)))
-            ts.review(int(day))
+            marks.append((day, ys[-1]))
+            if state.last_review is None or int(day) > state.last_review:
+                state = model.transition(state, int(day))
     return {
         "xs": xs,
         "ys": ys,
         "review_marks": marks,
-        "S_final": ts.S,
-        "recall_at_exam": ts.recall_on(exam_day),
+        "S_final": model.to_stability(state),
+        "recall_at_exam": (
+            0.0 if state.last_review is None
+            else model.predict(state, exam_day - state.last_review)),
+        "model_version": model.version,
     }
 
 

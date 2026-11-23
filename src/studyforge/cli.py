@@ -9,10 +9,11 @@ from datetime import datetime, timedelta
 
 from . import state as st
 from .memory import TopicState, fit_stability, initial_stability
+from .models import DEFAULT_MODEL, get_model, get_model_by_version, list_models
 from .planner import PlanTopic, build_plan, to_schedule
 
 
-def _plan_topics(state: dict) -> list[PlanTopic]:
+def _plan_topics(state: dict, model=None) -> list[PlanTopic]:
     """One PlanTopic per knowledge topic, with all its exam bindings.
 
     A topic shared by two exams keeps one memory state but contributes
@@ -24,7 +25,12 @@ def _plan_topics(state: dict) -> list[PlanTopic]:
     legacy states) do not match any topic ID: those topics get an
     empty recorded history, and an as-of estimate that would need
     their events is marked unavailable instead of fabricated.
+    `model` (a model instance or registry name) is attached to each
+    PlanTopic, so the planner evaluates with it; with none given the
+    topics carry no model and the default exponential model runs.
     """
+    if isinstance(model, str):
+        model = get_model(model)
     by_id = {ex["name"]: ex for ex in state["config"]["exams"]}
     history: dict[str, list[tuple[int, float | None]]] = {}
     for h in state.get("history", []):
@@ -40,8 +46,14 @@ def _plan_topics(state: dict) -> list[PlanTopic]:
         S = t["S"] if t["S"] is not None else initial_stability(t["difficulty"])
         pts.append(PlanTopic(tid, bindings, S, t["last_review"],
                              difficulty=t["difficulty"],
-                             history=history.get(tid, [])))
+                             history=history.get(tid, []),
+                             model=model))
     return pts
+
+
+def _model_version(state: dict) -> str:
+    """The model version tag stored on a state, or the default."""
+    return state.get("model_version", get_model(DEFAULT_MODEL).version)
 
 
 def _resolve_topic(state: dict, ref: str) -> str:
@@ -98,18 +110,22 @@ def _objective_of(state: dict, plan_days: dict[str, list[int]]) -> float:
 def cmd_plan(args: argparse.Namespace) -> None:
     cfg = st.load_config(args.exams)
     state = st.new_state(cfg)
-    topics = _plan_topics(state)
+    model = get_model(args.model)
+    topics = _plan_topics(state, model=model)
     horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     plan, obj = build_plan(
         topics, horizon, cfg["daily_budget_minutes"],
         cfg["session_minutes"], rest, start_day=0, seed=args.seed,
+        model=model,
     )
     sched = to_schedule(plan, cfg["session_minutes"])
     _store_plan(state, sched)
+    state["model_version"] = model.version
     st.save_state(state, args.state)
     n_sessions = sum(len(v) for v in plan.values())
     print(f"Study plan: {n_sessions} sessions, objective {obj:.3f}")
+    print(f"Model: {model.version}")
     print(f"Budget: {cfg['daily_budget_minutes']} min/day, "
           f"sessions of {cfg['session_minutes']} min")
     _print_schedule(state, sched, horizon, rest)
@@ -157,16 +173,20 @@ def cmd_log(args: argparse.Namespace) -> None:
 
 
 def _rebuild(state: dict, today: int, seed: int,
-             extra: dict[int, int] | None = None):
+             extra: dict[int, int] | None = None,
+             model=None):
     """Rebuild the plan from today. extra maps day -> added minutes of cap."""
     cfg = state["config"]
-    topics = _plan_topics(state)
+    if model is None:
+        model = get_model_by_version(_model_version(state))
+    topics = _plan_topics(state, model=model)
     horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     if not extra:
         plan, obj = build_plan(
             topics, horizon, cfg["daily_budget_minutes"],
             cfg["session_minutes"], rest, start_day=today, seed=seed,
+            model=model,
         )
         return plan, obj, horizon
     # per-day caps for the what-if run
@@ -181,7 +201,7 @@ def _rebuild(state: dict, today: int, seed: int,
         ordered = sorted(topics, key=lambda t: t.name)
         from .planner import MIN_GAIN, MAX_PER_TOPIC_PER_DAY, _day_has_room
         while True:
-            base = objective(topics, plan, as_of=today)
+            base = objective(topics, plan, as_of=today, model=model)
             best = None
             for tp in ordered:
                 for d in range(start_day, min(horizon, tp.latest_exam_day)):
@@ -191,7 +211,8 @@ def _rebuild(state: dict, today: int, seed: int,
                     if plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
                         continue
                     plan[tp.name].append(d)
-                    gain = objective(topics, plan, as_of=today) - base
+                    gain = objective(topics, plan, as_of=today,
+                                     model=model) - base
                     plan[tp.name].pop()
                     if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
                         best = (gain, tp.name, d)
@@ -208,8 +229,8 @@ def _rebuild(state: dict, today: int, seed: int,
     # so the what-if comparison stays apples to apples.
     plan = local_search(topics, plan, horizon, cfg["daily_budget_minutes"],
                         cfg["session_minutes"], rest, today, caps=caps,
-                        as_of=today)
-    return plan, objective(topics, plan, as_of=today), horizon
+                        as_of=today, model=model)
+    return plan, objective(topics, plan, as_of=today, model=model), horizon
 
 
 def _diff_plans(old_sched: dict[int, list[tuple[str, int]]],
@@ -243,14 +264,18 @@ def cmd_replan(args: argparse.Namespace) -> None:
         int(d): [(s["topic"], s["minutes"]) for s in sessions]
         for d, sessions in state.get("plan", {}).items()
     }
-    plan, obj, horizon = _rebuild(state, today, args.seed)
+    model = get_model(args.model) if args.model else None
+    plan, obj, horizon = _rebuild(state, today, args.seed, model=model)
     sched = to_schedule(plan, cfg["session_minutes"])
     _store_plan(state, sched)
+    if model is not None:
+        state["model_version"] = model.version
     st.save_state(state, args.state)
     added, removed = _diff_plans(old_sched, sched, today)
     n_sessions = sum(len(v) for v in plan.values())
     print(f"Replanned from day {today}: {n_sessions} sessions, "
           f"objective {obj:.3f}")
+    print(f"Model: {_model_version(state)}")
     if added:
         print("Added sessions:")
         for d, name, minutes in added:
@@ -267,6 +292,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     state = st.load_state(args.state)
     today = args.today if args.today is not None else st.day0_today(state)
     print(f"Status on day {today} ({_date_of(state, today)}):")
+    print(f"Model: {_model_version(state)}")
     print(f"{'Topic':32s} {'Exams':22s} {'S(days)':>7s} "
           f"{'Recall':>7s} {'Exam in':>7s} {'R@exam':>7s} {'S from':>8s}")
     # earliest bound deadline per topic for the at-a-glance columns
@@ -308,15 +334,20 @@ def cmd_what_if(args: argparse.Namespace) -> None:
     state = st.load_state(args.state)
     today = args.today if args.today is not None else st.day0_today(state)
     cfg = state["config"]
-    topics = _plan_topics(state)
+    model = get_model(args.model) if args.model else None
+    if model is None:
+        model = get_model_by_version(_model_version(state))
+    topics = _plan_topics(state, model=model)
     horizon = max(t.latest_exam_day for t in topics)
     rest = set(cfg["rest_days"])
     base_plan, base_obj = build_plan(
         topics, horizon, cfg["daily_budget_minutes"],
         cfg["session_minutes"], rest, start_day=today, seed=args.seed,
+        model=model,
     )
     extra = {args.day: args.extra_minutes}
-    new_plan, new_obj, _ = _rebuild(state, today, args.seed, extra=extra)
+    new_plan, new_obj, _ = _rebuild(state, today, args.seed, extra=extra,
+                                    model=model)
     base_sched = to_schedule(base_plan, cfg["session_minutes"])
     new_sched = to_schedule(new_plan, cfg["session_minutes"])
     added, removed = _diff_plans(base_sched, new_sched, today)
@@ -380,6 +411,8 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser("plan", help="build a study plan from an exams file")
     pp.add_argument("--exams", required=True, help="path to exams YAML")
     pp.add_argument("--seed", type=int, default=0)
+    pp.add_argument("--model", choices=list_models(), default=DEFAULT_MODEL,
+                    help="memory model for planning (default: exponential)")
     pp.set_defaults(func=cmd_plan)
 
     pl = sub.add_parser("log", help="log a completed study session")
@@ -395,6 +428,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("replan", help="rebuild the plan from today")
     pr.add_argument("--today", type=int, default=None)
     pr.add_argument("--seed", type=int, default=0)
+    pr.add_argument("--model", choices=list_models(), default=None,
+                    help="memory model for planning (default: the "
+                         "model stored on the state)")
     pr.set_defaults(func=cmd_replan)
 
     ps = sub.add_parser("status", help="per-topic recall and exam readiness")
@@ -406,6 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--extra-minutes", type=int, required=True)
     pw.add_argument("--today", type=int, default=None)
     pw.add_argument("--seed", type=int, default=0)
+    pw.add_argument("--model", choices=list_models(), default=None,
+                    help="memory model for planning (default: the "
+                         "model stored on the state)")
     pw.set_defaults(func=cmd_what_if)
 
     pe = sub.add_parser("export", help="export the plan to CSV or Markdown")
