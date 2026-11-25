@@ -8,6 +8,12 @@ import sys
 from datetime import datetime, timedelta
 
 from . import state as st
+from .activities import (
+    ACTIVITY_KINDS,
+    ITEM_NOVELTY,
+    Activity,
+    apply_activity,
+)
 from .memory import TopicState, fit_stability, initial_stability
 from .models import DEFAULT_MODEL, get_model, get_model_by_version, list_models
 from .planner import PlanTopic, build_plan, to_schedule
@@ -146,13 +152,49 @@ def cmd_log(args: argparse.Namespace) -> None:
         last_review=t["last_review"],
     )
     old_S = ts.S
-    R = ts.review(today, R=args.recall)
+    # What the session was. An explicit --activity wins; an observed
+    # recall means a retrieval was attempted; otherwise a first
+    # session is acquisition (learn) and a later one is a retrieval
+    # attempt whose outcome was not recorded.
+    if args.activity is not None:
+        kind = args.activity
+    elif args.recall is not None or prev_last is not None:
+        kind = "retrieval"
+    else:
+        kind = "learn"
+    activity = Activity(
+        kind=kind,
+        day=today,
+        minutes=args.minutes,
+        correctness=args.recall,
+        item=args.item,
+        assistance=args.assistance,
+        feedback=args.feedback,
+    )
+    result = apply_activity(ts, activity)
     t["S"] = ts.S
     t["last_review"] = ts.last_review
-    interval = None if prev_last is None else today - prev_last
+    # The interval is a property of the log, not of the memory state:
+    # days since the topic's previous logged event. A failed retrieval
+    # or an unknown outcome does not advance last_review, but the
+    # next recall is still observed that many days after the previous
+    # engagement, so the pair stays usable for fitting. With no prior
+    # logged event for this topic, fall back to the stored last review
+    # (a migrated legacy state, whose history names topics by display
+    # name instead of ID).
+    prev_event_day: int | None = None
+    for h in state["history"]:
+        if h.get("topic") == tid:
+            prev_event_day = int(h["day"])
+    if prev_event_day is not None:
+        interval = today - prev_event_day
+    else:
+        interval = None if prev_last is None else today - prev_last
     state["history"].append(
         {"day": today, "topic": tid, "minutes": args.minutes,
-         "interval": interval, "recall": args.recall}
+         "interval": interval, "recall": args.recall,
+         "activity": kind, "item": args.item,
+         "assistance": args.assistance, "feedback": args.feedback}
     )
     # Refit this topic's personal stability from its logged history.
     pairs = [(h.get("interval"), h.get("recall")) for h in state["history"]
@@ -165,8 +207,15 @@ def cmd_log(args: argparse.Namespace) -> None:
         t["S_source"] = "fitted"
     st.save_state(state, args.state)
     print(f"Logged {args.minutes} min on {t['name']} (day {today}).")
-    print(f"Retrievability at review: {R:.0%}. "
-          f"Stability: {old_S:.2f} -> {ts.S:.2f} days.")
+    if args.recall is not None:
+        print(f"Retrievability at review: {args.recall:.0%}. "
+              f"Stability: {old_S:.2f} -> {ts.S:.2f} days.")
+        if result.outcome == "failure":
+            print("Failed retrieval: no stability gain; the attempt is "
+                  "logged for fitting.")
+    else:
+        print(f"Activity {kind} ({result.label}): {result.outcome}. "
+              f"Stability: {old_S:.2f} -> {ts.S:.2f} days.")
     if S_fit is not None:
         print(f"Fitted your personal stability from {n_pairs} recall "
               f"data points: {S_fit:.2f} days.")
@@ -423,6 +472,20 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--recall", type=float, default=None,
                     help="fraction remembered at review, 0 to 1 "
                          "(personalizes this topic's stability)")
+    pl.add_argument("--activity", choices=list(ACTIVITY_KINDS),
+                    default=None,
+                    help="what the session was: learn, retrieval, "
+                         "worked-example, practice-problem, explain, "
+                         "feedback (default: learn on a fresh topic, "
+                         "retrieval otherwise)")
+    pl.add_argument("--item", choices=list(ITEM_NOVELTY), default=None,
+                    help="whether the practiced item was new ('novel', "
+                         "a transfer test) or a repeat ('repeated')")
+    pl.add_argument("--feedback", action="store_true",
+                    help="corrective feedback followed this session")
+    pl.add_argument("--assistance", action="store_true",
+                    help="help was given during this session (a hint, "
+                         "notes, a peek at the solution)")
     pl.set_defaults(func=cmd_log)
 
     pr = sub.add_parser("replan", help="rebuild the plan from today")

@@ -17,8 +17,13 @@ retrievability R = exp(-t / S), then grow stability::
 with GROWTH = 1.0. Consequences of the rule, by construction:
 
 * reviewing at full recall (R = 1) leaves S unchanged,
-* reviewing after full decay (R = 0) doubles S,
+* reviewing after full decay (predicted R = 0) doubles S,
 * everything in between scales linearly with how much was forgotten.
+
+An observed R of 0 is different from a predicted one: it is a
+failed retrieval, and a failed retrieval is not learning. It
+changes neither S nor the last review day. Only a predicted zero
+(a first review, or a planned review after full decay) doubles S.
 
 The intuition: a successful recall after a long gap proves durable
 memory, so stability grows more. A review right after learning proves
@@ -131,9 +136,22 @@ class TopicState:
         is used for the update instead of the model's prediction. When
         the user reports what they actually remembered, the model
         believes them.
+
+        One exception: an explicitly observed R of 0 is a failed
+        retrieval, and a failed retrieval is not learning. It changes
+        neither stability nor the last review day; the attempt stays
+        in the log for fitting, but the memory state does not credit
+        it. A predicted zero is different: a first review with no
+        observed recall is acquisition, and a planned review uses the
+        model's own prediction, so those keep the documented rule.
         """
+        observed = R is not None
         if R is None:
             R = self.recall_on(day)
+        if observed and R == 0.0:
+            # Failed retrieval: nothing was retained, so nothing was
+            # learned. The state stays exactly as it was.
+            return 0.0
         self.S = self.S * (1.0 + GROWTH * (1.0 - R))
         self.last_review = day
         return R
