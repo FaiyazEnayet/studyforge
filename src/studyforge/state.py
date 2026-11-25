@@ -574,6 +574,31 @@ def validate_state(state: dict) -> dict:
                     "history entries must be in day order"
                 )
             last_day_by_topic[topic] = day
+        # Typed activity fields (A07): optional on old entries, and
+        # validated when present. A logged activity names its kind,
+        # its item novelty, and whether assistance or feedback was
+        # involved; bad values fail loudly instead of being stored.
+        from .activities import ACTIVITY_KINDS, ITEM_NOVELTY
+
+        kind = h.get("activity")
+        if kind is not None and kind not in ACTIVITY_KINDS:
+            raise ValueError(
+                f"history entry {i} in state has activity {kind!r}; "
+                f"choose one of {list(ACTIVITY_KINDS)}"
+            )
+        item = h.get("item")
+        if item is not None and item not in ITEM_NOVELTY:
+            raise ValueError(
+                f"history entry {i} in state has item {item!r}; "
+                f"mark a new problem 'novel' and a repeat 'repeated'"
+            )
+        for flag in ("assistance", "feedback"):
+            flag_v = h.get(flag)
+            if flag_v is not None and not isinstance(flag_v, bool):
+                raise ValueError(
+                    f"history entry {i} in state has {flag} "
+                    f"{flag_v!r}; use true or false"
+                )
     plan = state.get("plan", {})
     if not isinstance(plan, dict):
         raise ValueError(

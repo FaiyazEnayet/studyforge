@@ -64,6 +64,13 @@ class ExponentialModel(ModelProtocol):
         else:
             R = normalize_outcome(outcome).value
             assert R is not None
+            if R == 0.0:
+                # An observed zero is a failed retrieval, not learning:
+                # it changes neither stability nor the last review day.
+                # A predicted zero (outcome None) keeps the documented
+                # rule: a first review is acquisition, and a planned
+                # review uses the model's own prediction.
+                return state
         new_S = state.S * (1.0 + GROWTH * (1.0 - R))
         return ModelState(S=new_S, last_review=day,
                           difficulty=state.difficulty)

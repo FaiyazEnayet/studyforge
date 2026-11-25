@@ -61,7 +61,7 @@ python tools/make_dashboard.py
 
 ## Technical design
 
-StudyForge models recall with an exponential forgetting curve and increases stability when a review occurs. Fixed-length sessions are allocated using greedy marginal gain followed by local improvement. Daily capacity, rest days, exam deadlines and a spacing guardrail constrain the plan. The planner invariants (topic identity, schema version and migration, calculation semantics, backup) are recorded in docs/planner-invariants.md.
+StudyForge models recall with an exponential forgetting curve and increases stability when a review occurs. Fixed-length sessions are allocated using greedy marginal gain followed by local improvement. Daily capacity, rest days, exam deadlines and a spacing guardrail constrain the plan. The planner invariants (topic identity, schema version and migration, calculation semantics, backup) are recorded in docs/planner-invariants.md. Logged sessions are typed learning activities (learn, retrieval, worked-example, practice-problem, explain, feedback) with the observed correctness, item novelty, assistance, and feedback recorded. A failed retrieval never counts as learning, and a session with no recorded outcome stays unknown; acquisition, retrieval, and transfer (novel-item) performance are kept distinct.
 
 ```mermaid
 flowchart LR
@@ -83,7 +83,7 @@ The example calendar is a real engine output for its supplied weights and constr
 
 ## Code and data
 
-`memory.py` defines forgetting and review updates. `planner.py` handles allocation. `state.py` manages exam configuration and history. `tools/make_dashboard.py` presents actual planner output.
+`memory.py` defines forgetting and review updates. `planner.py` handles allocation. `state.py` manages exam configuration and history. `activities.py` defines the typed learning activities and the ablation that compares the activity-aware update against the old update on held-out logged outcomes. `tools/make_dashboard.py` presents actual planner output.
 
 Dashboard topic data uses one entry per normalized topic ID, with `exam_days` listing every binding deadline and `exam_day` as the latest binding deadline. The fitting demo chart uses illustrative example points, not logged reviews, and its data carries that provenance.
 

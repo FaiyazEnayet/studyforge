@@ -109,6 +109,12 @@ class FSRSAdapter(ModelProtocol):
                 )
             R = norm.value
             assert R is not None
+            if R == 0.0:
+                # An observed zero is a failed retrieval, not learning:
+                # it changes neither stability nor the last review day.
+                # The adapter reuses the StudyForge review update, so
+                # it inherits the same rule.
+                return state
         # Map through StudyForge units, apply the same update, map back.
         S_sf = to_studyforge_stability(state.S)
         from ..memory import GROWTH
