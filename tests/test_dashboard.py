@@ -26,23 +26,25 @@ def load_example_config():
 def test_plan_data_matches_cli_numbers():
     data = dash.plan_data(load_example_config())
     assert data["n_sessions"] == 72
-    assert data["objective"] == pytest.approx(2.278051, rel=1e-4)
+    assert data["objective"] == pytest.approx(2.312646, rel=1e-4)
     assert data["total_minutes"] == 1800
     assert len(data["topic_info"]) == 15
 
 
 def test_plan_data_exam_summary():
+    # recall figures are the A05 plan's: the exchange phase moved
+    # sessions to better days, so recall at each exam rose
     data = dash.plan_data(load_example_config())
     ex = data["exam_summary"]
     assert ex["Psychology Midterm"]["sessions"] == 13
     assert ex["Physics I Midterm"]["sessions"] == 21
     assert ex["Calculus III Final"]["sessions"] == 38
     assert ex["Psychology Midterm"]["recall_at_exam"] == pytest.approx(
-        0.6795, rel=1e-3)
+        0.7099, rel=1e-3)
     assert ex["Physics I Midterm"]["recall_at_exam"] == pytest.approx(
-        0.7759, rel=1e-3)
+        0.7792, rel=1e-3)
     assert ex["Calculus III Final"]["recall_at_exam"] == pytest.approx(
-        0.8226, rel=1e-3)
+        0.8236, rel=1e-3)
 
 
 def test_plan_data_respects_constraints():
@@ -88,8 +90,8 @@ def test_recall_trajectory_matches_simulate():
     S_sim, R_sim = simulate(tp, info["days"])
     assert traj["S_final"] == pytest.approx(S_sim)
     assert traj["recall_at_exam"] == pytest.approx(R_sim[0])
-    assert traj["S_final"] == pytest.approx(8.2926, rel=1e-3)
-    assert traj["recall_at_exam"] == pytest.approx(0.6964, rel=1e-3)
+    assert traj["S_final"] == pytest.approx(8.6584, rel=1e-3)
+    assert traj["recall_at_exam"] == pytest.approx(0.7937, rel=1e-3)
 
 
 def test_recall_trajectory_curve_is_monotone_between_reviews():

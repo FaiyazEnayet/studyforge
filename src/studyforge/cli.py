@@ -238,48 +238,18 @@ def _rebuild(state: dict, today: int, seed: int,
             model=model,
         )
         return plan, obj, horizon
-    # per-day caps for the what-if run
-    from .planner import greedy, local_search, objective
+    # per-day caps for the what-if run: the same build_plan pipeline
+    # as the standard path, with the per-day caps, so the what-if
+    # comparison stays apples to apples
+    from .planner import objective
 
     caps = {d: cfg["daily_budget_minutes"] + extra.get(d, 0)
             for d in range(today, horizon)}
-
-    def greedy_caps(topics, horizon, session_min, rest_days, start_day):
-        plan = {tp.name: [] for tp in topics}
-        used: dict[int, int] = {}
-        ordered = sorted(topics, key=lambda t: t.name)
-        from .planner import MIN_GAIN, MAX_PER_TOPIC_PER_DAY, _day_has_room
-        while True:
-            base = objective(topics, plan, as_of=today, model=model)
-            best = None
-            for tp in ordered:
-                for d in range(start_day, min(horizon, tp.latest_exam_day)):
-                    cap = caps.get(d, cfg["daily_budget_minutes"])
-                    if not _day_has_room(used, d, session_min, cap, rest_days):
-                        continue
-                    if plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
-                        continue
-                    plan[tp.name].append(d)
-                    gain = objective(topics, plan, as_of=today,
-                                     model=model) - base
-                    plan[tp.name].pop()
-                    if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
-                        best = (gain, tp.name, d)
-            if best is None:
-                break
-            _, name, d = best
-            plan[name].append(d)
-            plan[name].sort()
-            used[d] = used.get(d, 0) + session_min
-        return plan
-
-    plan = greedy_caps(topics, horizon, cfg["session_minutes"], rest, today)
-    # Same local search as the standard path, but with the per-day caps,
-    # so the what-if comparison stays apples to apples.
-    plan = local_search(topics, plan, horizon, cfg["daily_budget_minutes"],
-                        cfg["session_minutes"], rest, today, caps=caps,
-                        as_of=today, model=model)
-    return plan, objective(topics, plan, as_of=today, model=model), horizon
+    plan, obj = build_plan(
+        topics, horizon, cfg["daily_budget_minutes"],
+        cfg["session_minutes"], rest, start_day=today, seed=seed,
+        model=model, caps=caps)
+    return plan, obj, horizon
 
 
 def _diff_plans(old_sched: dict[int, list[tuple[str, int]]],

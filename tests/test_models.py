@@ -528,12 +528,15 @@ def test_stage3_studyforge_06_example_plan_is_unchanged():
                            cfg["session_minutes"], set(cfg["rest_days"]),
                            start_day=0, seed=0)
     assert sum(len(v) for v in plan.values()) == 72
-    assert obj == pytest.approx(2.278051)
+    # A05 moved the example objective from 2.278051 to 2.312646: the
+    # exchange phase finds swaps single moves cannot see. The point
+    # of this test stands: the default and HLR plans still agree.
+    assert obj == pytest.approx(2.312646)
     plan2, obj2 = build_plan(topics, horizon, cfg["daily_budget_minutes"],
                              cfg["session_minutes"], set(cfg["rest_days"]),
                              start_day=0, seed=0, model=get_model("hlr"))
     assert sum(len(v) for v in plan2.values()) == 72
-    assert obj2 == pytest.approx(2.278051)
+    assert obj2 == pytest.approx(2.312646)
 
 
 def test_stage3_studyforge_06_dashboard_trajectory_uses_model():

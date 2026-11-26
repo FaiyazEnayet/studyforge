@@ -25,7 +25,24 @@ Algorithm
    interface stability; the algorithm uses no randomness.
 2. Local search: repeatedly apply the single best session move
    (relocate a session to another topic/day, or drop it) until no move
-   improves the objective.
+   improves the objective. After each accepted relocation, the freed
+   capacity is refilled by deterministic re-augmentation (best
+   positive-gain sessions first).
+3. Exchange search: when the oracle gap justifies it, bounded
+   two-session swaps (two sessions exchange days) are evaluated and
+   the single best improving swap is applied, followed by a settle
+   pass of local search plus re-augmentation.
+
+Speed comes from delta scoring, not from changing what is optimized.
+A session added to, dropped from, or moved between topics changes
+only the involved topics' contributions, so every candidate gain is
+computed from those topics alone. Per-topic trajectories are cached
+as chronological snapshots (the state after each effective review, in
+day order) keyed by the full session list, so repeated evaluations of
+the same plan reuse the same snapshots instead of replaying history.
+The cache is owned by one search run and invalidated explicitly;
+``objective`` itself still recomputes from scratch and stays the
+independent check that delta totals match full recomputation.
 
 Sessions are fixed size chunks (default 25 minutes). The planner never
 splits a chunk.
@@ -43,6 +60,13 @@ _DEFAULT_MODEL = ExponentialModel()
 MAX_PER_TOPIC_PER_DAY = 2
 MIN_GAIN = 1e-12
 MAX_PASSES = 100
+# A two-session exchange phase runs only when the oracle reference
+# says meaningful headroom remains: the relative gap (oracle minus
+# achieved, over the oracle) must clear this threshold.
+EXCHANGE_GAP_THRESHOLD = 0.01
+MAX_EXCHANGE_ROUNDS = 5
+MAX_EXCHANGE_EVALS = 5000
+MAX_SETTLE_ROUNDS = 3
 
 
 def _resolve_model(model, topic=None):
@@ -294,6 +318,46 @@ def _asof_base(
     return model.to_stability(state), state.last_review
 
 
+def _replay(model, base_state, days, upto=None):
+    """Chronological replay of planned sessions from ``base_state``.
+
+    Returns the snapshot list: ``(day, state)`` after each effective
+    transition, in day order. A session on or before the last review
+    day is a no-op and leaves no snapshot; replay stops at ``upto``.
+    The states are the model's own immutable states, so a snapshot
+    stays valid for as long as its inputs do. The skip rule and the
+    transition order are exactly the ones ``simulate`` has always
+    used, so replaying from a snapshot gives the same state as
+    replaying from the base.
+    """
+    snaps = []
+    state = base_state
+    S, lr = model.to_stability(state), state.last_review
+    for d in days:
+        if upto is not None and d >= upto:
+            break
+        if lr is not None and (d <= lr or S <= 0):
+            continue
+        state = model.transition(state, d)
+        S, lr = model.to_stability(state), state.last_review
+        snaps.append((d, state))
+    return snaps
+
+
+def _state_at(snaps, base_state, day):
+    """The state after all sessions before ``day``.
+
+    The last snapshot strictly before ``day``, or the base state when
+    no session precedes it.
+    """
+    state = base_state
+    for d, s in snaps:
+        if d >= day:
+            break
+        state = s
+    return state
+
+
 def simulate(
     topic: PlanTopic, session_days: list[int], model=None
 ) -> tuple[float, list[float | None]]:
@@ -327,13 +391,13 @@ def simulate(
                 f"session day for topic {topic.name!r} must be 0 or "
                 f"later, got {dv}"
             )
+    days = sorted(session_days)
+    difficulty = topic.difficulty or 3
     # chronological pass over planned sessions for the final S
-    state = model.from_stability(S, lr, topic.difficulty or 3)
-    for d in sorted(session_days):
-        if lr is not None and (d <= lr or S <= 0):
-            continue
-        state = model.transition(state, d)
-        S, lr = model.to_stability(state), state.last_review
+    base_state = model.from_stability(S, lr, difficulty)
+    snaps = _replay(model, base_state, days)
+    if snaps:
+        S = model.to_stability(snaps[-1][1])
     recalls: list[float | None] = []
     for _, _, exam_day in topic.bindings:
         base = _asof_base(topic, exam_day, model)
@@ -341,14 +405,10 @@ def simulate(
             recalls.append(None)
             continue
         S_e, lr_e = base
-        state_e = model.from_stability(
-            S_e, lr_e, topic.difficulty or 3)
-        for d in sorted(session_days):
-            if d >= exam_day:
-                break
-            if lr_e is not None and (d <= lr_e or S_e <= 0):
-                continue
-            state_e = model.transition(state_e, d)
+        state_e = model.from_stability(S_e, lr_e, difficulty)
+        snaps_e = _replay(model, state_e, days, upto=exam_day)
+        if snaps_e:
+            state_e = snaps_e[-1][1]
             S_e, lr_e = model.to_stability(state_e), state_e.last_review
         if lr_e is None or S_e <= 0:
             recalls.append(0.0)
@@ -398,6 +458,416 @@ def _day_has_room(
     return day not in rest_days and used.get(day, 0) + session_min <= daily_cap
 
 
+class _ObjectiveCache:
+    """Per-topic trajectory cache for one search run.
+
+    Three memo tables, all keyed by values that fully determine the
+    result, so a cached entry can never go stale while its inputs
+    live: the as-of base per (topic, exam day, model), the
+    chronological snapshot list per (topic, base state, session
+    list, model), and the whole simulate result per (topic, session
+    list, model). Topics are fixed for the run, so the topic name
+    identifies the topic. ``invalidate`` drops a topic's entries (or
+    all of them) explicitly; it exists so a caller that replaces a
+    topic's data can force a recompute instead of trusting the key.
+    ``hits`` and ``misses`` count simulate-level lookups.
+    """
+
+    def __init__(self):
+        self._asof: dict = {}
+        self._trajectories: dict = {}
+        self._simulate: dict = {}
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def entries(self) -> int:
+        return len(self._asof) + len(self._trajectories) + len(self._simulate)
+
+    def invalidate(self, name: str | None = None) -> None:
+        """Drop cached entries for one topic, or all of them."""
+        if name is None:
+            self._asof.clear()
+            self._trajectories.clear()
+            self._simulate.clear()
+            return
+        for table in (self._asof, self._trajectories, self._simulate):
+            for key in [k for k in table if k[0] == name]:
+                del table[key]
+
+    def asof_base(self, topic: PlanTopic, exam_day: int, model):
+        key = (topic.name, exam_day, id(model))
+        if key not in self._asof:
+            self._asof[key] = _asof_base(topic, exam_day, model)
+        return self._asof[key]
+
+    def trajectory(self, topic: PlanTopic, base_state, days, model):
+        """Chronological snapshots from ``base_state`` over ``days``."""
+        key = (topic.name, base_state, tuple(days), id(model))
+        snaps = self._trajectories.get(key)
+        if snaps is None:
+            snaps = _replay(model, base_state, list(days))
+            self._trajectories[key] = snaps
+        return snaps
+
+    def simulate(self, topic: PlanTopic, days, model=None):
+        """The topic's simulate result, memoized for this run."""
+        if isinstance(model, str):
+            model = get_model(model)
+        model = _resolve_model(model, topic)
+        key = (topic.name, tuple(sorted(days)), id(model))
+        hit = self._simulate.get(key)
+        if hit is not None:
+            self.hits += 1
+            return hit[0], list(hit[1])
+        self.misses += 1
+        for d in days:
+            dv = _require_int(d, f"session day for topic {topic.name!r}")
+            if dv < 0:
+                raise ValueError(
+                    f"session day for topic {topic.name!r} must be 0 or "
+                    f"later, got {dv}"
+                )
+        days_sorted = sorted(days)
+        difficulty = topic.difficulty or 3
+        base_state = model.from_stability(
+            topic.S, topic.last_review, difficulty)
+        snaps = self.trajectory(topic, base_state, days_sorted, model)
+        S = model.to_stability(snaps[-1][1]) if snaps else topic.S
+        recalls: list[float | None] = []
+        for _, _, exam_day in topic.bindings:
+            base = self.asof_base(topic, exam_day, model)
+            if base is None:
+                recalls.append(None)
+                continue
+            S_e, lr_e = base
+            state_e = model.from_stability(S_e, lr_e, difficulty)
+            snaps_e = self.trajectory(topic, state_e, days_sorted, model)
+            state_e = _state_at(snaps_e, state_e, exam_day)
+            S_e, lr_e = model.to_stability(state_e), state_e.last_review
+            if lr_e is None or S_e <= 0:
+                recalls.append(0.0)
+            else:
+                recalls.append(model.predict(state_e, exam_day - lr_e))
+        result = (S, tuple(recalls))
+        self._simulate[key] = result
+        return result[0], list(result[1])
+
+    def contribution(self, topic: PlanTopic, days, as_of=None, model=None):
+        """The topic's share of the objective for ``days``."""
+        _, recalls = self.simulate(topic, days, model)
+        total = 0.0
+        for (_, w, exam_day), R in zip(topic.bindings, recalls):
+            if R is None:
+                continue
+            if as_of is not None and exam_day <= as_of:
+                continue
+            total += w * R
+        return total
+
+
+class _SearchRun:
+    """Delta-evaluated search state for one greedy/local-search run.
+
+    Holds the plan, each topic's current contribution (kept current
+    as the plan changes), the per-day minutes used, and the
+    trajectory cache. Adding, dropping, or moving a session changes
+    only the involved topics' contributions, so every candidate gain
+    is computed from those topics alone and never needs a full
+    objective recompute. ``evaluations`` counts candidate gains.
+    """
+
+    def __init__(self, topics, plan=None, as_of=None, model=None,
+                 session_min=25):
+        self.topics = sorted(topics, key=lambda t: t.name)
+        self.by_name = {t.name: t for t in self.topics}
+        self.as_of = as_of
+        self.model = model
+        self.session_min = session_min
+        self.cache = _ObjectiveCache()
+        self.plan: dict[str, list[int]] = {
+            k: sorted(v) for k, v in (plan or {}).items()
+        }
+        for tp in self.topics:
+            self.plan.setdefault(tp.name, [])
+        self.contrib = {
+            tp.name: self.cache.contribution(
+                tp, self.plan[tp.name], as_of, model)
+            for tp in self.topics
+        }
+        self.used: dict[int, int] = {}
+        for days in self.plan.values():
+            for d in days:
+                self.used[d] = self.used.get(d, 0) + session_min
+        self.evaluations = 0
+
+    def total(self) -> float:
+        return sum(self.contrib.values())
+
+    def _refresh(self, name: str) -> None:
+        self.contrib[name] = self.cache.contribution(
+            self.by_name[name], self.plan[name], self.as_of, self.model)
+
+    def add_gain(self, name: str, day: int) -> float:
+        self.evaluations += 1
+        tp = self.by_name[name]
+        days = sorted(self.plan[name] + [day])
+        return (self.cache.contribution(tp, days, self.as_of, self.model)
+                - self.contrib[name])
+
+    def drop_gain(self, name: str, day: int) -> float:
+        self.evaluations += 1
+        tp = self.by_name[name]
+        days = list(self.plan[name])
+        days.remove(day)
+        return (self.cache.contribution(tp, days, self.as_of, self.model)
+                - self.contrib[name])
+
+    def move_gain(self, name: str, day: int, name2: str, day2: int) -> float:
+        self.evaluations += 1
+        if name2 == name:
+            tp = self.by_name[name]
+            days = list(self.plan[name])
+            days.remove(day)
+            days.append(day2)
+            return (self.cache.contribution(tp, days, self.as_of,
+                                           self.model)
+                    - self.contrib[name])
+        tp = self.by_name[name]
+        tp2 = self.by_name[name2]
+        days = list(self.plan[name])
+        days.remove(day)
+        days2 = sorted(self.plan[name2] + [day2])
+        return ((self.cache.contribution(tp, days, self.as_of, self.model)
+                 - self.contrib[name])
+                + (self.cache.contribution(tp2, days2, self.as_of,
+                                          self.model)
+                   - self.contrib[name2]))
+
+    def swap_gain(self, n1: str, d1: int, n2: str, d2: int) -> float:
+        """Gain of exchanging the days of two sessions at once."""
+        self.evaluations += 1
+        tp1 = self.by_name[n1]
+        tp2 = self.by_name[n2]
+        days1 = list(self.plan[n1])
+        days1.remove(d1)
+        days1.append(d2)
+        days2 = list(self.plan[n2])
+        days2.remove(d2)
+        days2.append(d1)
+        return ((self.cache.contribution(tp1, days1, self.as_of,
+                                        self.model)
+                 - self.contrib[n1])
+                + (self.cache.contribution(tp2, days2, self.as_of,
+                                          self.model)
+                   - self.contrib[n2]))
+
+    def apply_add(self, name: str, day: int) -> None:
+        self.plan[name].append(day)
+        self.plan[name].sort()
+        self._refresh(name)
+        self.used[day] = self.used.get(day, 0) + self.session_min
+
+    def apply_drop(self, name: str, day: int) -> None:
+        self.plan[name].remove(day)
+        self._refresh(name)
+        self.used[day] -= self.session_min
+        if self.used[day] <= 0:
+            del self.used[day]
+
+    def apply_move(self, name: str, day: int, name2: str, day2: int) -> None:
+        self.apply_drop(name, day)
+        self.apply_add(name2, day2)
+
+    def apply_swap(self, n1: str, d1: int, n2: str, d2: int) -> None:
+        self.plan[n1].remove(d1)
+        self.plan[n2].remove(d2)
+        self.plan[n1].append(d2)
+        self.plan[n2].append(d1)
+        self.plan[n1].sort()
+        self.plan[n2].sort()
+        self._refresh(n1)
+        self._refresh(n2)
+        # per-day totals are identical after a swap, so used is unchanged
+
+    def reaugment(self, horizon, daily_cap, session_min=None,
+                  rest_days=(), start_day=0, caps=None) -> int:
+        """Greedily add the best positive-gain session until none helps.
+
+        Deterministic: the same topic/day order and tie rule as
+        greedy. Returns the number of sessions added.
+        """
+        if session_min is None:
+            session_min = self.session_min
+        self.session_min = session_min
+        return _add_best_loop(self, horizon, daily_cap, session_min,
+                              set(rest_days), start_day, caps)
+
+
+def _add_best_loop(run, horizon, daily_cap, session_min, rest_days,
+                   start_day, caps=None):
+    """Add the best positive-gain session until none helps.
+
+    The shared add loop for greedy and re-augmentation: topics in
+    name order, days ascending, ties keep the first candidate whose
+    gain clears the current best by more than MIN_GAIN. Returns the
+    number of sessions added.
+    """
+    added = 0
+    while True:
+        best = None
+        for tp in run.topics:
+            last_day = min(horizon, tp.latest_exam_day)
+            for d in range(start_day, last_day):
+                cap = caps.get(d, daily_cap) if caps else daily_cap
+                if not _day_has_room(run.used, d, session_min, cap,
+                                     rest_days):
+                    continue
+                if run.plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
+                    continue
+                gain = run.add_gain(tp.name, d)
+                if gain > MIN_GAIN and (best is None
+                                        or gain > best[0] + MIN_GAIN):
+                    best = (gain, tp.name, d)
+        if best is None:
+            return added
+        _, name, d = best
+        run.apply_add(name, d)
+        added += 1
+
+
+def _local_search_loop(run, horizon, daily_cap, session_min, rest_days,
+                       start_day=0, max_passes=MAX_PASSES, caps=None):
+    """Best-improvement moves until convergence, on ``run``.
+
+    After each accepted relocation the freed capacity is refilled by
+    deterministic re-augmentation, so a move never leaves usable
+    minutes empty. Drops never open a useful slot on their own, but
+    the same refill runs after them for uniformity.
+    """
+
+    def cap_of(day):
+        return caps.get(day, daily_cap) if caps else daily_cap
+
+    for _ in range(max_passes):
+        used = dict(run.used)
+        best = None
+        sessions = sorted((n, d) for n, ds in run.plan.items()
+                          for d in ds if n in run.by_name)
+        for name, d in sessions:
+            # candidate 1: drop the session
+            gain = run.drop_gain(name, d)
+            if gain > MIN_GAIN and (best is None
+                                    or gain > best[0] + MIN_GAIN):
+                best = (gain, ("drop", name, d))
+            # candidate 2: move it to another (topic, day)
+            for tp2 in run.topics:
+                last_day = min(horizon, tp2.latest_exam_day)
+                for d2 in range(start_day, last_day):
+                    if (tp2.name, d2) == (name, d):
+                        continue
+                    if d2 in rest_days:
+                        continue
+                    room = used.get(d2, 0) + (0 if d2 == d else session_min)
+                    if room > cap_of(d2):
+                        continue
+                    if tp2.name == name:
+                        cnt = run.plan[name].count(d2)
+                    else:
+                        cnt = run.plan[tp2.name].count(d2)
+                    if cnt >= MAX_PER_TOPIC_PER_DAY:
+                        continue
+                    gain = run.move_gain(name, d, tp2.name, d2)
+                    if gain > MIN_GAIN and (best is None
+                                            or gain > best[0] + MIN_GAIN):
+                        best = (gain, ("move", name, d, tp2.name, d2))
+        if best is None:
+            return
+        _, action = best
+        if action[0] == "drop":
+            _, name, d = action
+            run.apply_drop(name, d)
+        else:
+            _, name, d, name2, d2 = action
+            run.apply_move(name, d, name2, d2)
+        run.reaugment(horizon, daily_cap, session_min, rest_days,
+                      start_day, caps=caps)
+
+
+def _exchange_search(run, max_rounds=MAX_EXCHANGE_ROUNDS,
+                     max_evals=MAX_EXCHANGE_EVALS):
+    """Apply improving two-session swaps until none remains.
+
+    A swap exchanges the days of two sessions from different topics.
+    Per-day totals never change, so daily caps are preserved; the
+    per-topic-per-day cap and each topic's exam day are checked
+    explicitly. Only the two topics involved change contribution, so
+    the gain is an exact affected-topic delta. Deterministic order:
+    sessions sorted by (topic, day), pairs in lexicographic order,
+    the single best swap per round, ties keep the first. Returns
+    (rounds, swaps).
+    """
+    rounds = 0
+    swaps = 0
+    for _ in range(max_rounds):
+        sessions = sorted((n, d) for n, ds in run.plan.items()
+                          for d in ds if n in run.by_name)
+        best = None
+        evaluated = 0
+        stop = False
+        for i in range(len(sessions)):
+            for j in range(i + 1, len(sessions)):
+                if evaluated >= max_evals:
+                    stop = True
+                    break
+                (n1, d1), (n2, d2) = sessions[i], sessions[j]
+                if n1 == n2 or d1 == d2:
+                    continue
+                if run.plan[n1].count(d2) >= MAX_PER_TOPIC_PER_DAY:
+                    continue
+                if run.plan[n2].count(d1) >= MAX_PER_TOPIC_PER_DAY:
+                    continue
+                if d2 >= run.by_name[n1].latest_exam_day:
+                    continue
+                if d1 >= run.by_name[n2].latest_exam_day:
+                    continue
+                evaluated += 1
+                gain = run.swap_gain(n1, d1, n2, d2)
+                if gain > MIN_GAIN and (best is None
+                                        or gain > best[0] + MIN_GAIN):
+                    best = (gain, n1, d1, n2, d2)
+            if stop:
+                break
+        if best is None:
+            break
+        _, n1, d1, n2, d2 = best
+        run.apply_swap(n1, d1, n2, d2)
+        rounds += 1
+        swaps += 1
+    return rounds, swaps
+
+
+def oracle_gap(topics, plan, horizon, session_min, rest_days,
+               start_day=0, as_of=None, model=None):
+    """Reference oracle gap for a plan.
+
+    The oracle is the sum over topics of the solo greedy objective:
+    each topic planned alone with an unbounded daily cap, so it never
+    competes for shared minutes. It is a reference, not a rigorous
+    upper bound: solo greedy is itself heuristic, so the gap can in
+    principle be negative on unusual inputs, and it is reported as
+    measured. Returns (oracle, achieved, gap).
+    """
+    achieved = objective(topics, plan, as_of=as_of, model=model)
+    oracle = 0.0
+    for tp in topics:
+        solo = greedy([tp], horizon, daily_cap=10 ** 9,
+                      session_min=session_min, rest_days=set(rest_days),
+                      start_day=start_day, as_of=as_of, model=model)
+        oracle += objective([tp], solo, as_of=as_of, model=model)
+    return oracle, achieved, oracle - achieved
+
+
 def greedy(
     topics: list[PlanTopic],
     horizon: int,
@@ -407,35 +877,24 @@ def greedy(
     start_day: int = 0,
     as_of: int | None = None,
     model=None,
+    caps: dict[int, int] | None = None,
 ) -> dict[str, list[int]]:
-    """Greedily add the highest marginal gain session until none helps."""
+    """Greedily add the highest marginal gain session until none helps.
+
+    Delta-evaluated: adding a session to one topic changes only that
+    topic's contribution, so each candidate's gain comes from the
+    trajectory cache instead of a full objective recompute. Selection
+    order and tie-breaking are unchanged, so the plan is identical to
+    the full-recompute version. `caps` optionally overrides the daily
+    cap per day (used by what-if replanning).
+    """
     _validate_schedule_args(topics, horizon, daily_cap, session_min,
-                            rest_days, start_day, as_of=as_of)
-    plan: dict[str, list[int]] = {tp.name: [] for tp in topics}
-    used: dict[int, int] = {}
-    ordered = sorted(topics, key=lambda t: t.name)
-    while True:
-        base = objective(topics, plan, as_of=as_of, model=model)
-        best: tuple[float, str, int] | None = None
-        for tp in ordered:
-            last_day = min(horizon, tp.latest_exam_day)
-            for d in range(start_day, last_day):
-                if not _day_has_room(used, d, session_min, daily_cap, rest_days):
-                    continue
-                if plan[tp.name].count(d) >= MAX_PER_TOPIC_PER_DAY:
-                    continue
-                plan[tp.name].append(d)
-                gain = objective(topics, plan, as_of=as_of, model=model) - base
-                plan[tp.name].pop()
-                if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
-                    best = (gain, tp.name, d)
-        if best is None:
-            break
-        _, name, d = best
-        plan[name].append(d)
-        plan[name].sort()
-        used[d] = used.get(d, 0) + session_min
-    return plan
+                            rest_days, start_day, as_of=as_of, caps=caps)
+    run = _SearchRun(topics, as_of=as_of, model=model,
+                     session_min=session_min)
+    _add_best_loop(run, horizon, daily_cap, session_min, set(rest_days),
+                   start_day, caps)
+    return run.plan
 
 
 def local_search(
@@ -451,7 +910,13 @@ def local_search(
     as_of: int | None = None,
     model=None,
 ) -> dict[str, list[int]]:
-    """Best improvement moves until convergence. Deterministic."""
+    """Best improvement moves until convergence. Deterministic.
+
+    Delta-evaluated: a drop or move changes only the involved
+    topics' contributions. After each accepted relocation the freed
+    capacity is refilled by deterministic re-augmentation, so a move
+    never leaves usable minutes empty.
+    """
     _validate_schedule_args(topics, horizon, daily_cap, session_min,
                             rest_days, start_day, as_of=as_of, caps=caps,
                             max_passes=max_passes)
@@ -463,73 +928,11 @@ def local_search(
                     f"planned day for topic {name!r} must be 0 or later, "
                     f"got {dv}"
                 )
-    plan = {k: sorted(v) for k, v in plan.items()}
-    ordered = sorted(topics, key=lambda t: t.name)
-    by_name = {tp.name: tp for tp in topics}
-
-    def cap_of(day: int) -> int:
-        return caps.get(day, daily_cap) if caps else daily_cap
-
-    def used_minutes(p: dict[str, list[int]]) -> dict[int, int]:
-        u: dict[int, int] = {}
-        for days in p.values():
-            for d in days:
-                u[d] = u.get(d, 0) + session_min
-        return u
-
-    for _ in range(max_passes):
-        base = objective(topics, plan, as_of=as_of, model=model)
-        used = used_minutes(plan)
-        best: tuple[float, tuple] | None = None
-
-        sessions = sorted((n, d) for n, ds in plan.items() for d in ds)
-        for name, d in sessions:
-            # candidate 1: drop the session
-            plan[name].remove(d)
-            gain = objective(topics, plan, as_of=as_of, model=model) - base
-            plan[name].append(d)
-            plan[name].sort()
-            if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
-                best = (gain, ("drop", name, d))
-            # candidate 2: move it to another (topic, day)
-            for tp2 in ordered:
-                last_day = min(horizon, tp2.latest_exam_day)
-                for d2 in range(start_day, last_day):
-                    if (tp2.name, d2) == (name, d):
-                        continue
-                    if d2 in rest_days:
-                        continue
-                    room = used.get(d2, 0) + (0 if d2 == d else session_min)
-                    if room > cap_of(d2):
-                        continue
-                    if tp2.name == name:
-                        cnt = plan[name].count(d2)
-                    else:
-                        cnt = plan[tp2.name].count(d2)
-                    if cnt >= MAX_PER_TOPIC_PER_DAY:
-                        continue
-                    plan[name].remove(d)
-                    plan[tp2.name].append(d2)
-                    plan[tp2.name].sort()
-                    gain = objective(topics, plan, as_of=as_of,
-                                     model=model) - base
-                    plan[tp2.name].remove(d2)
-                    plan[name].append(d)
-                    plan[name].sort()
-                    if gain > MIN_GAIN and (best is None or gain > best[0] + MIN_GAIN):
-                        best = (gain, ("move", name, d, tp2.name, d2))
-        if best is None:
-            break
-        _, action = best
-        if action[0] == "drop":
-            _, name, d = action
-            plan[name].remove(d)
-        else:
-            _, name, d, name2, d2 = action
-            plan[name].remove(d)
-            plan[name2].append(d2)
-            plan[name2].sort()
-    return plan
+    run = _SearchRun(topics, plan=plan, as_of=as_of, model=model,
+                     session_min=session_min)
+    _local_search_loop(run, horizon, daily_cap, session_min,
+                       set(rest_days), start_day, max_passes, caps)
+    return run.plan
 
 
 def build_plan(
@@ -542,12 +945,24 @@ def build_plan(
     seed: int = 0,
     as_of: int | None = None,
     model=None,
+    stats: dict | None = None,
+    caps: dict[int, int] | None = None,
 ) -> tuple[dict[str, list[int]], float]:
     """Greedy allocation followed by local search.
 
     Returns (plan, objective value). Deterministic for a given seed;
     the seed is accepted for interface stability and the algorithm uses
-    no randomness.
+    no randomness. After local search, a bounded two-session exchange
+    phase runs when the oracle gap justifies it, followed by a settle
+    pass of local search plus re-augmentation. `stats`, when given,
+    is filled with the run's cache counters, evaluation counts, the
+    oracle gap, and the exchange rounds applied.
+
+    `caps`, when given, maps day -> daily minutes for that day and
+    overrides `daily_cap` on those days (the what-if path). Every
+    phase of the search, greedy, local search, exchange, and settle,
+    runs under the same caps, so a what-if plan and the standard plan
+    are built by the same pipeline.
 
     The objective is evaluated as of `as_of` (default: `start_day`,
     the day planning starts): only exams still in the future at that
@@ -561,11 +976,38 @@ def build_plan(
     rest = set(rest_days or ())
     if as_of is None:
         as_of = start_day
-    plan = greedy(topics, horizon, daily_cap, session_min, rest, start_day,
-                  as_of=as_of, model=model)
-    plan = local_search(topics, plan, horizon, daily_cap, session_min, rest,
-                        start_day, as_of=as_of, model=model)
-    return plan, objective(topics, plan, as_of=as_of, model=model)
+    run = _SearchRun(topics, as_of=as_of, model=model,
+                     session_min=session_min)
+    _add_best_loop(run, horizon, daily_cap, session_min, rest, start_day,
+                   caps=caps)
+    _local_search_loop(run, horizon, daily_cap, session_min, rest,
+                       start_day, caps=caps)
+    oracle, achieved, gap = oracle_gap(
+        topics, run.plan, horizon, session_min, rest, start_day,
+        as_of=as_of, model=model)
+    exchanged = (0, 0)
+    if oracle > 0 and gap / oracle > EXCHANGE_GAP_THRESHOLD:
+        exchanged = _exchange_search(run)
+        for _ in range(MAX_SETTLE_ROUNDS):
+            before = {k: list(v) for k, v in run.plan.items()}
+            _local_search_loop(run, horizon, daily_cap, session_min,
+                               rest, start_day, caps=caps)
+            added = run.reaugment(horizon, daily_cap, session_min, rest,
+                                  start_day, caps=caps)
+            if run.plan == before and added == 0:
+                break
+    if stats is not None:
+        stats.update({
+            "cache_hits": run.cache.hits,
+            "cache_misses": run.cache.misses,
+            "cache_entries": run.cache.entries,
+            "evaluations": run.evaluations,
+            "oracle": oracle,
+            "oracle_gap": gap,
+            "exchange_rounds": exchanged[0],
+            "exchange_swaps": exchanged[1],
+        })
+    return run.plan, objective(topics, run.plan, as_of=as_of, model=model)
 
 
 def to_schedule(
