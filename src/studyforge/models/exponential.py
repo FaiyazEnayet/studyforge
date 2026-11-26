@@ -105,3 +105,26 @@ def _fit_events(
     if as_of is not None:
         events = [e for e in events if e.day < as_of]
     return events
+
+
+class DefaultExponentialModel(ExponentialModel):
+    """The unfitted default: difficulty stability, never fitted.
+
+    Predicts and transitions exactly like the exponential model,
+    but ``fit`` always returns the difficulty default stability, so
+    a comparison against the fitted exponential isolates what the
+    fitting itself adds.
+    """
+
+    version = "exponential-default/1.0"
+
+    def fit(
+        self, history: list[HistoryEvent], as_of: int | None = None,
+        difficulty: int = 3,
+    ) -> ModelState:
+        events = _fit_events(history, as_of)
+        last = events[-1].day if events else None
+        return ModelState(
+            S=initial_stability(difficulty), last_review=last,
+            difficulty=difficulty,
+        )

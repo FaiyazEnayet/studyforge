@@ -15,12 +15,15 @@ from .base import (
     Outcome,
     normalize_outcome,
 )
-from .exponential import ExponentialModel
+from .constant import ConstantModel
+from .exponential import DefaultExponentialModel, ExponentialModel
 from .fsrs_adapter import FSRSAdapter
 from .hlr import HierarchicalHalfLifeModel
 
 _REGISTRY: dict[str, type[ModelProtocol]] = {
     "exponential": ExponentialModel,
+    "default": DefaultExponentialModel,
+    "constant": ConstantModel,
     "hlr": HierarchicalHalfLifeModel,
     "fsrs": FSRSAdapter,
 }
@@ -91,6 +94,8 @@ def load_model(data: dict) -> tuple[ModelProtocol, ModelState]:
 
 __all__ = [
     "DEFAULT_MODEL",
+    "ConstantModel",
+    "DefaultExponentialModel",
     "ExponentialModel",
     "FSRSAdapter",
     "HierarchicalHalfLifeModel",
