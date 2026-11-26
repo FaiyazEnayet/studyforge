@@ -16,13 +16,13 @@ state (`S`, `last_review`). Exams bind to that ID with a weight; the
 deadline comes from the exam, never from the topic
 (`state.new_state`, `state.py:281`). A topic shared by two exams
 keeps one memory state and contributes weight times recall at EACH
-bound exam's deadline (`planner.PlanTopic`, `src/studyforge/planner.py:132`).
+bound exam's deadline (`planner.PlanTopic`, `src/studyforge/planner.py:168`).
 
 Enforced by: `validate_config` rejects duplicate topic names within
 an exam and names that slug to the same ID (`state.py:61`);
 `validate_state` rejects bindings to unknown topics and topics bound
 to no exam (`state.py:362`); `PlanTopic` rejects empty or duplicate
-bindings (`planner.py:132`).
+bindings (`planner.py:168`).
 
 Pinned by: `tests/test_state.py` (stable IDs, shared-topic
 bindings), `tests/test_stage3_studyforge_st1.py` (shared topic keeps
@@ -131,21 +131,38 @@ pairs exist, clamped to 0.1 to 60 days (`memory.fit_stability`,
 
 The planning objective is the sum over topics and their exam bindings
 of weight times predicted recall at the exam day
-(`planner.objective`, `planner.py:345`). Greedy allocation adds the
+(`planner.objective`, `planner.py:420`). Greedy allocation adds the
 single session with the largest marginal gain; ties break by topic
 name then day, so the result is fully deterministic and the seed
 parameter is accepted for interface stability only
-(`planner.greedy`, `planner.py:384`). Local search applies the single
+(`planner.greedy`, `planner.py:871`). Local search applies the single
 best move (relocate or drop a session) until no move improves the
-objective (`planner.local_search`, `planner.py:423`). A move counts
+objective (`planner.local_search`, `planner.py:900`). A move counts
 only when it improves the objective by more than `MIN_GAIN = 1e-12`
-(`planner.py:41`).
+(`planner.py:61`). Candidate gains are computed by delta scoring: a
+session added to, dropped from, or moved between topics changes only
+the involved topics' contributions, and per-topic trajectories are
+cached as chronological snapshots keyed by the full session list, so
+the search evaluates the same candidates as a full recompute without
+paying for one (`planner._SearchRun`, `planner._ObjectiveCache`).
+After each accepted relocation the freed capacity is refilled by
+deterministic re-augmentation, and when the oracle gap justifies it a
+bounded two-session exchange phase swaps session days pairwise
+(`planner._exchange_search`, `planner.oracle_gap`). No randomized
+restarts are used anywhere. `build_plan` accepts an optional
+per-day caps map; the what-if path runs the same pipeline under
+those caps, so a what-if plan and the standard plan are built by
+the same search and extra capacity can only help.
 
 Pinned by: `tests/test_memory.py` (recall formula, review update
 rule, initial stability, fitting),
 `tests/test_stage3_studyforge_01.py` (as-of values hand-derived),
 `tests/test_planner.py` (`test_deterministic_given_seed`,
-`test_local_search_never_hurts`).
+`test_local_search_never_hurts`),
+`tests/test_stage3_studyforge_05.py` (deltas equal full recomputation,
+greedy and local search match the full-recompute oracle, cache
+invalidation, re-augmentation, exchange improvement, byte-identical
+plans in fresh processes, oracle-gap values).
 
 ## 9. As-of evaluation discipline
 
@@ -153,13 +170,13 @@ Each exam's recall is computed from the memory state as of that
 exam's day. Only logged reviews strictly before the exam day may
 inform the estimate; otherwise the state is rebuilt by replaying the
 recorded review history from the initial stability
-(`planner._asof_base`, `planner.py:241`). When the recorded history
+(`planner._asof_base`, `planner.py:282`). When the recorded history
 cannot reconstruct the as-of state (no history was supplied, or a
 migrated legacy state's history names topics by display name), the
 estimate is marked unavailable (`None`) instead of fabricated
-(`planner.simulate`, `planner.py:277`). Planning objectives take an
+(`planner.simulate`, `planner.py:361`). Planning objectives take an
 explicit as-of day: only exams still in the future participate in
-forward replanning (`planner.objective`, `planner.py:345`).
+forward replanning (`planner.objective`, `planner.py:420`).
 `state.readiness` applies the same rule to past exams.
 
 Pinned by: `tests/test_stage3_studyforge_01.py` (shared-topic
@@ -171,11 +188,11 @@ display-name legacy history).
 
 A planned session on the same day as the last review (logged or
 planned) changes nothing: a repeat review on the same day sees recall
-1 and gains no stability (`planner.simulate`, `planner.py:277`; the
+1 and gains no stability (`planner.simulate`, `planner.py:361`; the
 same rule in `memory.TopicState.review`, `memory.py:126`). At most one
 session per topic per day affects the memory state, so the
 two-per-day cap (`planner.MAX_PER_TOPIC_PER_DAY = 2`,
-`planner.py:40`) is a scheduling guardrail against cramming, not two
+`planner.py:60`) is a scheduling guardrail against cramming, not two
 learning events.
 
 Pinned by: `tests/test_memory.py`
@@ -189,11 +206,11 @@ Pinned by: `tests/test_memory.py`
 
 No session is ever scheduled on a rest day, on or after a topic's
 exam day, and no day exceeds its minutes cap
-(`planner.greedy` / `planner.local_search`, `planner.py:384` /
-`planner.py:423`). A topic never reviewed as of an exam day has
+(`planner.greedy` / `planner.local_search`, `planner.py:871` /
+`planner.py:900`). A topic never reviewed as of an exam day has
 recall zero there, and its first review is treated as full learning
 (`R = 0` at review, so stability doubles)
-(`planner.simulate`, `planner.py:277`).
+(`planner.simulate`, `planner.py:361`).
 
 Pinned by: `tests/test_planner.py`
 (`test_plan_respects_rest_days`,
@@ -207,7 +224,9 @@ Pinned by: `tests/test_planner.py`
 
 Building the plan from the included `exams.yaml` twice, from fresh
 state both times, yields the identical plan and the identical
-objective: 72 sessions, objective 2.278051. The same figures are
+objective: 72 sessions, objective 2.312646. The figure was 2.278051
+before A05; the exchange phase finds swaps single moves cannot see,
+so the same 72 sessions now score higher. The session count is
 published in the README evidence table.
 
 Pinned by: `tests/test_stage3_studyforge_7.py`

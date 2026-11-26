@@ -158,7 +158,7 @@ def test_example_plan_regenerates_deterministically():
     assert plans[0] == plans[1]
     assert objectives[0] == objectives[1]
     assert sum(len(v) for v in plans[0].values()) == 72
-    assert objectives[0] == pytest.approx(2.278051, rel=1e-4)
+    assert objectives[0] == pytest.approx(2.312646, rel=1e-4)
 
 
 def test_round_trip_serialization_is_stable(tmp_path):
